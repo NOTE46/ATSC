@@ -3,7 +3,7 @@ from collections import defaultdict
 
 vehiclecount=defaultdict(int)
 
-model = YOLO("yolov8n.pt")
+model = YOLO("best.pt")
 
 def uamodel(frame):
         global vehiclecount, model
