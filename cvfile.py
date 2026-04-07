@@ -15,11 +15,4 @@ while True:
 vid.release()
 cv.destroyAllWindows()
 
-def readPhot():
-   img = cv.imread(r"C:\python_code\ATSC\image.png")
-
-   cv.imshow("name0",img)
-
-   cv.waitKey(0)
-   cv.destroyAllWindows()
 
