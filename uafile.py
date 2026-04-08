@@ -1,19 +1,20 @@
 from ultralytics import YOLO
 from collections import defaultdict
 import cv2 as cv
-
 #vehiclecount to count number of indivitual vehicles and density for how many vehicles
 vehiclecount=defaultdict(int)
-density = 0
 
-model = YOLO(r"yolov8n")
+model_path=r'Model\yolov8n.pt'
+model = YOLO(r"model_path")
 
 #read the video from camera and give feedback of what types of object present
 def uamodel(frame):
         
-        global vehiclecount, model, density
-        #process per frame
+        global vehiclecount, model
+
+        #process per frame and init density to count number of objects
         results=model(frame)
+        density = 0
 
         #saving the labels given
         for box in results[0].boxes:
