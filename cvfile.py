@@ -8,6 +8,7 @@ while True:
 
     if rev is False:
          break
+    
     uamodel(frame)   
     cv.imshow("photo",frame)
     cv.waitKey(0)

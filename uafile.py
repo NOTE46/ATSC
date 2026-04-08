@@ -5,7 +5,7 @@ import cv2 as cv
 vehiclecount=defaultdict(int)
 
 model_path=r'Model\yolov8n.pt'
-model = YOLO(r"model_path")
+model = YOLO(model_path)
 
 #read the video from camera and give feedback of what types of object present
 def uamodel(frame):
