@@ -1,6 +1,7 @@
 from ultralytics import YOLO
 from collections import defaultdict
 import cv2 as cv
+from ambdet import ambulance_detect
 #vehiclecount to count number of indivitual vehicles and density for how many vehicles
 vehiclecount=defaultdict(int)
 
@@ -30,8 +31,13 @@ def uamodel(frame):
                 vehiclecount["person"]+=1
                 density+=1
             if label =="truck":
-                vehiclecount["truck"]+=1
-                density+=1
-                    
+                if ambulance_detect(frame) is True:
+                     vehiclecount["ambulance"]+=1
+                     density+=1
+                     continue
+                else:     
+                    vehiclecount["truck"]+=1
+                    density+=1
+                  
         print(f"No of cars:{vehiclecount['car']}\nNo of motorcycle:{vehiclecount['motorcycle']}\nNo of person:{vehiclecount['person']}\nDensity:{density}")
     
