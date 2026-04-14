@@ -1,19 +1,25 @@
 import cv2 as cv
+import time
 from uafile import uamodel
 
-vid=cv.VideoCapture(0)
+def cvfun(lane_no):
 
-while True:
-    rev,frame=vid.read()
+    vid=cv.VideoCapture(lane_no)
 
-    if rev is False:
-         break
-    
-    uamodel(frame)   
-    cv.imshow("photo",frame)
-    cv.waitKey(0)
+    while True:
 
-vid.release()
-cv.destroyAllWindows()
+        for i in range(5):
+            vid.grab()
+
+        rev,frame=vid.retrieve()
+        
+        if rev is False:
+            print(f"Video capture failed on lane {lane_no}")
+            break
+        uamodel(frame) 
+        time.sleep(2)
+        
+    vid.release()
+    cv.destroyAllWindows()
 
 

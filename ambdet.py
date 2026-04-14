@@ -9,9 +9,9 @@ def ambulance_detect(frame):
     for box in results[0].boxes:
         label=results[0].names[int(box.cls)]
 
-        if label == 'ambulace':
+        if label == 'ambulance':
             return True
-        else:
-            return False
+    
+    return False
         
     

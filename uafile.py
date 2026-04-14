@@ -17,20 +17,17 @@ def uamodel(frame):
         results=model(frame)
         density = 0
 
-        #saving the labels given
+        #saving the labels
         for box in results[0].boxes:
             label=results[0].names[int(box.cls)]
 
             if label=="car":
                 vehiclecount["car"]+=1
                 density+=1
-            if label =="motorcycle":
+            elif label =="motorcycle":
                 vehiclecount["motorcycle"]+=1
                 density+=1
-            if label =="person":
-                vehiclecount["person"]+=1
-                density+=1
-            if label =="truck":
+            elif label =="truck":
                 if ambulance_detect(frame) is True:
                      vehiclecount["ambulance"]+=1
                      density+=1
@@ -38,6 +35,8 @@ def uamodel(frame):
                 else:     
                     vehiclecount["truck"]+=1
                     density+=1
+            else:
+                 continue
                   
-        print(f"No of cars:{vehiclecount['car']}\nNo of motorcycle:{vehiclecount['motorcycle']}\nNo of person:{vehiclecount['person']}\nDensity:{density}")
+        print(f"No of cars:{vehiclecount['car']}\nNo of motorcycle:{vehiclecount['motorcycle']}\nDensity:{density}")
     
