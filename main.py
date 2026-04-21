@@ -2,7 +2,7 @@ from cvfile import cvfun
 from control import controlfun
 import threading
 
-if __name__ == "__main__":
+def main():
     lane_data={}
     lanes=int(input("Enter number of lanes:"))
 
@@ -11,4 +11,7 @@ if __name__ == "__main__":
         lane_data[i]=data
 
     controlfun(lane_data,lanes)
+
+if __name__ == "__main__":
+    main()
 
