@@ -1,6 +1,7 @@
 import cv2 as cv
 import time
 from uafile import uamodel
+from control import controlfun
 
 def cvfun(lane_no):
 
@@ -15,11 +16,18 @@ def cvfun(lane_no):
         
         if rev is False:
             print(f"Video capture failed on lane {lane_no}")
-            break
-        uamodel(frame) 
+            vid.release()
+            return {"density": 0, "ambulance": False}
+
+        data=uamodel(frame) 
+        
+        vid.release()
+        cv.destroyAllWindows()
         time.sleep(2)
         
-    vid.release()
-    cv.destroyAllWindows()
+        return data
+        
+        
+    
 
 
