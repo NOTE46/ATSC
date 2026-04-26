@@ -1,5 +1,4 @@
 import cv2 as cv
-import time
 from uafile import uamodel
 from control import controlfun
 
@@ -23,8 +22,7 @@ def cvfun(lane_no):
         
         vid.release()
         cv.destroyAllWindows()
-        time.sleep(2)
-        
+    
         return data
         
         
