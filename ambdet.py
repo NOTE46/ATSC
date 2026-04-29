@@ -1,7 +1,9 @@
 from ultralytics import YOLO
+from pathlib import Path
 
-model_v=r'Model\best.pt'
+model_v=Path("Model")/"best.pt"
 model=YOLO(model_v)
+
 def ambulance_detect(frame):
 
     results=model(frame)
