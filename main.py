@@ -1,23 +1,38 @@
-from cvfile import cvfun
+from cvfile import Cameraf
 from control import controlfun
 import time
 import threading
 
+TIME_INTERVAL=2
 def main():
-
+    
     lanes=int(input("Enter number of lanes:"))
 
-    while True:
-        lane_data={}
+    camera={}
+    for i in range(lanes):
+        camera[i]=Cameraf(i,i)
 
-        for i in range(lanes):
-            data=cvfun(i)
-            lane_data[i]=data
+    try:
+        while True:
+            lane_data={}
 
-        results=controlfun(lane_data,lanes)
-        print(f"Lane:{results['lane_no']} Signal:{results['signal']}")
+            for i in range(lanes):
+                data=camera[i].cvfun()
+                lane_data[i]=data
 
-        time.sleep(2)
+            results=controlfun(lane_data,lanes)
+            print(f"Lane:{results['lane_no']} Signal:{results['signal']}")
+
+            time.sleep(TIME_INTERVAL)
+
+    except KeyboardInterrupt:
+        print("Stopped")
+    except Exception as e:
+        print(f"Error : {e}")
+
+    finally:
+        for c in camera.values():
+            c.releasevid()
 
 if __name__ == "__main__":
     main()
