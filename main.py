@@ -1,17 +1,50 @@
 from cvfile import Cameraf
 from control import controlfun
 import time
-import threading
+from manual_io import minput
 
 TIME_INTERVAL=2
 def main():
+
+    try:
+        n=0
+        while(True):
+
+            ty=int(input("Enter input type (0 for live camera) (1 for video) (2 for manual):"))
     
-    lanes=int(input("Enter number of lanes:"))
+            if(ty == 0):
+                lanes=int(input("Enter number of lanes:"))
+                break
+            elif(ty == 1):
+                lanes=int(input("Enter number of videos:"))
+                break
+            elif(ty == 2):
+                lanes=int(input("Enter number of lanes:"))
+                break
+            else:
+                print("Invalid input, Enter again!")
+                n+=1
 
+            if n >=5:
+                print("Multiple invalid input,Program Terminated")
+                return
+
+    except ValueError as e:
+        print(f"Please enter a valid number! (Number)\nProgram Terminated")
+        return
+        
     camera={}
-    for i in range(lanes):
-        camera[i]=Cameraf(i,i)
 
+    if ty== 2:
+        minput(lanes)
+        return
+
+    for i in range(lanes):
+        if(ty == 0):
+            camera[i]=Cameraf(i,i)
+        else:
+            path=input("Enter video path:")
+            camera[i]=Cameraf(i,path)
     try:
         while True:
             lane_data={}
