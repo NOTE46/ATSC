@@ -18,7 +18,7 @@ class Cameraf:
 
         rev,frame=self.vid.retrieve()
         
-        if rev is False:
+        if not rev :
             print(f"Video capture failed on lane {self.lane_no}")
             return {"density": 0, "ambulance": False}
 
