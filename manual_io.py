@@ -33,7 +33,7 @@ def minput(lanes):
 
     result=controlfun(data,lanes)
 
-    print(f"Lane no:{result["lane_no"]+1}\nSignal:{result["signal"]}")
+    print(f"Lane no:{result['lane_no']+1}\nSignal:{result['signal']}")
 
 
 
