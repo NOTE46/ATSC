@@ -10,9 +10,8 @@ from control import controlfun
 
 TIME_INTERVAL = 2
 
-# ─────────────────────────────────────────────
-# COLOURS & FONTS
-# ─────────────────────────────────────────────
+#font and color
+
 BG       = "#0d0d0f"
 PANEL    = "#16161a"
 BORDER   = "#2a2a30"
@@ -27,10 +26,7 @@ FONT_H    = ("Courier New", 13, "bold")
 FONT_B    = ("Courier New", 10)
 FONT_MONO = ("Courier New", 9)
 
-
-# ─────────────────────────────────────────────
-# SETUP SCREEN
-# ─────────────────────────────────────────────
+# start screen
 class SetupScreen(tk.Frame):
     def __init__(self, master, on_start):
         super().__init__(master, bg=BG)
@@ -45,7 +41,7 @@ class SetupScreen(tk.Frame):
         tk.Label(self, text="intelligent lane signal manager",
                  font=FONT_B, fg=SUBTEXT, bg=BG).pack(pady=(0, 40))
 
-        # ── mode card ──
+        #mode card
         card = tk.Frame(self, bg=PANEL, highlightthickness=1,
                         highlightbackground=BORDER)
         card.pack(padx=80, pady=8, fill="x")
@@ -65,7 +61,7 @@ class SetupScreen(tk.Frame):
                                                               padx=30, pady=4)
         tk.Label(card, text="", bg=PANEL).pack(pady=4)
 
-        # ── lanes card ──
+        #lanes card
         card2 = tk.Frame(self, bg=PANEL, highlightthickness=1,
                          highlightbackground=BORDER)
         card2.pack(padx=80, pady=8, fill="x")
@@ -84,7 +80,7 @@ class SetupScreen(tk.Frame):
                            command=self._on_lane_change).pack(side="left",
                                                               padx=6)
 
-        # ── video path card (shown only for mode 1) ──
+        #video path card for mode 1)
         self.path_card = tk.Frame(self, bg=PANEL, highlightthickness=1,
                                   highlightbackground=BORDER)
         tk.Label(self.path_card, text="VIDEO FILES", font=FONT_H,
@@ -93,7 +89,7 @@ class SetupScreen(tk.Frame):
         self.path_frame = tk.Frame(self.path_card, bg=PANEL)
         self.path_frame.pack(padx=20, pady=(0, 18), fill="x")
 
-        # ── start button ──
+        #start button
         self.start_btn = tk.Button(
             self, text="START SYSTEM  ▶",
             font=("Courier New", 12, "bold"),
@@ -102,7 +98,7 @@ class SetupScreen(tk.Frame):
             cursor="hand2", pady=12, command=self._start)
         self.start_btn.pack(padx=80, pady=30, fill="x")
 
-    # ── callbacks ────────────────────────────
+    #callbacks
     def _on_mode_change(self):
         if self.mode_var.get() == 1:
             self.path_card.pack(padx=80, pady=8, fill="x",
@@ -161,9 +157,7 @@ class SetupScreen(tk.Frame):
             self.on_start(mode, lanes, [])
 
 
-# ─────────────────────────────────────────────
-# LANE CARD
-# ─────────────────────────────────────────────
+#lane card
 class LaneCard(tk.Frame):
     def __init__(self, master, lane_no, show_feed=True):
         super().__init__(master, bg=PANEL, highlightthickness=1,
@@ -226,9 +220,7 @@ class LaneCard(tk.Frame):
             self.amb_var.set(f"Ambulance: {'YES 🚨' if ambulance else 'No'}")
 
 
-# ─────────────────────────────────────────────
-# MANUAL INPUT DIALOG
-# ─────────────────────────────────────────────
+#manual input
 class ManualDialog(tk.Toplevel):
     """Popup to collect manual density + ambulance per lane."""
     def __init__(self, master, lanes, on_submit):
@@ -306,9 +298,7 @@ class ManualDialog(tk.Toplevel):
         self.on_submit(data)
 
 
-# ─────────────────────────────────────────────
-# DASHBOARD
-# ─────────────────────────────────────────────
+#dashboard
 class Dashboard(tk.Frame):
     def __init__(self, master, mode, lanes, paths, on_stop):
         super().__init__(master, bg=BG)
@@ -324,7 +314,7 @@ class Dashboard(tk.Frame):
         self._build()
 
     def _build(self):
-        # ── top bar ──
+        #top bar
         bar = tk.Frame(self, bg=PANEL, pady=10)
         bar.pack(fill="x")
         tk.Label(bar, text="▶ TRAFFIC CONTROL SYSTEM",
@@ -339,7 +329,7 @@ class Dashboard(tk.Frame):
                   padx=16, pady=4, cursor="hand2",
                   command=self._stop).pack(side="right", padx=20)
 
-        # ── manual trigger button (mode 2 only) ──
+        #manual trigger button 
         if self.mode == 2:
             tk.Button(bar, text="  Enter Values  ",
                       font=FONT_B, fg=BG, bg=YELLOW,
@@ -348,7 +338,7 @@ class Dashboard(tk.Frame):
                       command=self._open_manual).pack(side="right",
                                                        padx=8)
 
-        # ── lane grid ──
+        #lane grid
         grid = tk.Frame(self, bg=BG)
         grid.pack(padx=20, pady=20, fill="both", expand=True)
         show_feed = self.mode != 2
@@ -360,7 +350,7 @@ class Dashboard(tk.Frame):
             self.cards[i] = card
             grid.columnconfigure(i % cols, weight=1)
 
-        # ── log strip ──
+        #log strip
         log_f = tk.Frame(self, bg=PANEL, height=60)
         log_f.pack(fill="x", side="bottom")
         log_f.pack_propagate(False)
@@ -372,21 +362,21 @@ class Dashboard(tk.Frame):
                  wraplength=860, justify="left").pack(side="left",
                                                        padx=8)
 
-    # ── lifecycle ────────────────────────────
+    #lifecycle
     def start(self):
         """Called after the frame is packed."""
         if self.mode in (0, 1):
             t = threading.Thread(target=self._init_cameras, daemon=True)
             t.start()
         else:
-            # manual mode — just mark ready
+            # manual mode mark ready
             self.after(0, lambda: self.status_var.set("⬤  READY — press Enter Values"))
 
     def _init_cameras(self):
         try:
             for i in range(self.lanes):
                 src = i if self.mode == 0 else self.paths[i]
-                self.cameras[i] = Cameraf(i, src)   # ✅ uses your Cameraf
+                self.cameras[i] = Cameraf(i, src)  
             self.after(0, lambda: self.status_var.set("⬤  RUNNING"))
             self.running = True
             self._run_loop()
@@ -408,14 +398,14 @@ class Dashboard(tk.Frame):
         ts = time.strftime("%H:%M:%S")
         self.after(0, lambda: self.log_var.set(f"[{ts}]  {msg}"))
 
-    # ── manual mode ──────────────────────────
+    #manual mode
     def _open_manual(self):
         ManualDialog(self, self.lanes, self._run_manual)
 
     def _run_manual(self, data):
         """Process one manual round and update cards."""
         try:
-            result = controlfun(data, self.lanes)   # ✅ your controlfun
+            result = controlfun(data, self.lanes) 
         except Exception as e:
             messagebox.showerror("Control Error", str(e))
             return
@@ -436,18 +426,18 @@ class Dashboard(tk.Frame):
         self.status_var.set(
             f"⬤  Lane {result['lane_no']+1} GREEN")
 
-    # ── camera loop (runs in background thread) ──
+    #camera loop
     def _run_loop(self):
         while self.running:
             lane_data  = {}
             frames     = {}
 
-            # ── per-lane threads so cameras process in parallel ──
+            # per-lane threads
             results_lock = threading.Lock()
 
             def process_lane(idx):
                 try:
-                    data = self.cameras[idx].cvfun()   # ✅ your cvfun
+                    data = self.cameras[idx].cvfun()  
                     frame = self._grab_raw_frame(idx)
                     with results_lock:
                         lane_data[idx]  = data
@@ -466,22 +456,21 @@ class Dashboard(tk.Frame):
             for t in threads:
                 t.join()
 
-            # ── update frames on main thread ──
+            # update frames on main thread
             for i in range(self.lanes):
                 if frames.get(i) is not None:
                     f = frames[i]
                     self.after(0, lambda f=f, idx=i:
                                self.cards[idx].update_frame(f))
 
-            # ── run your controlfun ──
             try:
-                result = controlfun(lane_data, self.lanes)  # ✅
+                result = controlfun(lane_data, self.lanes)  
             except Exception as e:
                 self._log(f"Control error: {e}")
                 time.sleep(TIME_INTERVAL)
                 continue
 
-            # ── update signals on main thread ──
+            #update signals on main thread ──
             for i in range(self.lanes):
                 sig = "GREEN" if i == result["lane_no"] else "RED"
                 d   = lane_data.get(i, {})
@@ -508,9 +497,7 @@ class Dashboard(tk.Frame):
         return frame if ret else None
 
 
-# ─────────────────────────────────────────────
-# APP ROOT
-# ─────────────────────────────────────────────
+# app root
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
