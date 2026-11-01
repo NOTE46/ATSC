@@ -1,48 +1,69 @@
-from ultralytics import YOLO
-from collections import defaultdict
-from ambdet import ambulance_detect
+import json
+import threading
 from pathlib import Path
-#vehiclecount to count number of indivitual vehicles and density for how many vehicles
+from ultralytics import YOLO
 
-model_path=Path("Model")/"yolov8n.pt"
-model = YOLO(model_path)
+# Module-level lock for thread-safe YOLO inference
+_yolo_lock = threading.Lock()
+_vehicle_model = None
+model = None
 
-#read the video from camera and give feedback of what types of object present
+TARGET_CLASSES = {"car", "motorcycle", "truck", "bus"}
+
+
+def _get_vehicle_model():
+    """Lazy-load the vehicle YOLO model under _yolo_lock."""
+    global _vehicle_model, model
+    if model is not None:
+        return model
+    if _vehicle_model is None:
+        with _yolo_lock:
+            if _vehicle_model is None:
+                model_path = "Model/yolov8n.pt"
+                config_path = Path("config.json")
+                if config_path.exists():
+                    try:
+                        with open(config_path, "r", encoding="utf-8") as f:
+                            cfg = json.load(f)
+                            model_path = cfg.get("vehicle_model", model_path)
+                    except Exception:
+                        pass
+                _vehicle_model = YOLO(model_path)
+    return _vehicle_model
+
+
 def uamodel(frame):
-        
-        truckd=False
-        vehiclecount=defaultdict(int)
-
-        #process per frame and init density to count number of objects
-        results=model(frame)
-        density = 0
-
-        #saving the labels
-        for box in results[0].boxes:
-            label=results[0].names[int(box.cls)]
-
-            if label=="car":
-                vehiclecount["car"]+=1
-                density+=1
-            elif label =="motorcycle":
-                vehiclecount["motorcycle"]+=1
-                density+=1
-            elif label =="truck":
-                truckd=True
-                vehiclecount["truck"]+=1
-                density+=1
-            
-            else:
-                 continue
-
-        if truckd is True:
-             if ambulance_detect(frame) is True:
-                     vehiclecount["ambulance"]+=1
-                     vehiclecount["truck"]-=1
-    
-                            
+    """
+    Thread-safe vehicle counter using YOLOv8.
+    Counts bounding boxes with class in {'car', 'motorcycle', 'truck', 'bus'}.
+    Returns a dictionary conforming to the ATSC shared data contract.
+    """
+    if frame is None:
         return {
-            "density": density,
-            "ambulance": vehiclecount["ambulance"] > 0
+            "density": 0,
+            "ambulance": False,
+            "emergency": False,
+            "emergency_type": "none"
         }
+
+    m = _get_vehicle_model()
+
+    with _yolo_lock:
+        results = m(frame, conf=0.4, verbose=False)
+
+    density = 0
+    if results and len(results) > 0 and results[0].boxes is not None:
+        names = results[0].names
+        for box in results[0].boxes:
+            cls_id = int(box.cls)
+            label = names[cls_id] if isinstance(names, dict) else names[cls_id]
+            if label in TARGET_CLASSES:
+                density += 1
+
+    return {
+        "density": density,
+        "ambulance": False,
+        "emergency": False,
+        "emergency_type": "none"
+    }
     

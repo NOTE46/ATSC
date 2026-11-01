@@ -1,13 +1,42 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+import json
+from pathlib import Path
 import threading
 import time
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 import cv2
 from PIL import Image, ImageTk
 
-from cvfile import Cameraf
-from control import controlfun
+try:
+    from control import controlfun, reset_control
+except ImportError:
+    from control import controlfun
+    def reset_control():
+        pass
 
+try:
+    from cvfile import Cameraf, scan_all_lanes
+except ImportError:
+    from cvfile import Cameraf
+    def scan_all_lanes(cameras, live=False):
+        return {}, {}
+
+
+def load_config():
+    cfg_path = Path("config.json")
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+CONFIG = load_config()
+GREEN_OPTIONS = CONFIG.get("green_options", [15, 30, 40, 50, 60])
+DEFAULT_GREEN = CONFIG.get("default_green", 30)
+DEFAULT_YELLOW = CONFIG.get("yellow_time", 5)
 TIME_INTERVAL = 2
 
 #font and color
@@ -80,6 +109,24 @@ class SetupScreen(tk.Frame):
                            command=self._on_lane_change).pack(side="left",
                                                               padx=6)
 
+        #green duration card
+        card3 = tk.Frame(self, bg=PANEL, highlightthickness=1,
+                         highlightbackground=BORDER)
+        card3.pack(padx=80, pady=8, fill="x")
+        tk.Label(card3, text="GREEN SIGNAL DURATION (SECONDS)", font=FONT_H,
+                 fg=SUBTEXT, bg=PANEL).pack(anchor="w", padx=20,
+                                            pady=(18, 6))
+        self.green_var = tk.IntVar(value=DEFAULT_GREEN)
+        row_g = tk.Frame(card3, bg=PANEL)
+        row_g.pack(padx=20, pady=(0, 18))
+        for g in GREEN_OPTIONS:
+            tk.Radiobutton(row_g, text=f"{g}s", variable=self.green_var,
+                           value=g, font=("Courier New", 12, "bold"),
+                           fg=TEXT, bg=PANEL, selectcolor=BG,
+                           activebackground=PANEL, activeforeground=ACCENT,
+                           indicatoron=False, width=5, relief="flat").pack(side="left",
+                                                                          padx=6)
+
         #video path card for mode 1)
         self.path_card = tk.Frame(self, bg=PANEL, highlightthickness=1,
                                   highlightbackground=BORDER)
@@ -102,7 +149,7 @@ class SetupScreen(tk.Frame):
     def _on_mode_change(self):
         if self.mode_var.get() == 1:
             self.path_card.pack(padx=80, pady=8, fill="x",
-                                before=self.start_btn)
+                                 before=self.start_btn)
             self._rebuild_paths()
         else:
             self.path_card.pack_forget()
@@ -145,6 +192,7 @@ class SetupScreen(tk.Frame):
     def _start(self):
         mode  = self.mode_var.get()
         lanes = self.lane_var.get()
+        green_time = self.green_var.get()
 
         if mode == 1:
             paths = [e.get().strip() for e in self._path_entries]
@@ -152,9 +200,9 @@ class SetupScreen(tk.Frame):
                 messagebox.showwarning("Missing paths",
                                        "Please select a video for every lane.")
                 return
-            self.on_start(mode, lanes, paths)
+            self.on_start(mode, lanes, paths, green_time)
         else:
-            self.on_start(mode, lanes, [])
+            self.on_start(mode, lanes, [], green_time)
 
 
 #lane card
@@ -202,35 +250,47 @@ class LaneCard(tk.Frame):
         self._photo = ImageTk.PhotoImage(pil)
         self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
 
-    def set_signal(self, signal: str, density=None, ambulance=None):
+    def set_signal(self, signal: str, density=None, ambulance=None, emergency_type=None, time_left=None):
         sig = signal.upper()
+        suffix = f" ({time_left}s)" if time_left is not None else ""
         if sig == "GREEN":
-            self.sig_label.config(text="● GO", fg=GREEN)
+            self.sig_label.config(text=f"● GO{suffix}", fg=GREEN)
             self.config(highlightbackground=GREEN)
         elif sig == "RED":
             self.sig_label.config(text="● STOP", fg=RED)
             self.config(highlightbackground=RED)
         else:
-            self.sig_label.config(text="● WAIT", fg=YELLOW)
+            self.sig_label.config(text=f"● WAIT{suffix}", fg=YELLOW)
             self.config(highlightbackground=YELLOW)
 
         if density is not None:
             self.count_var.set(f"Vehicles: {density}")
-        if ambulance is not None:
-            self.amb_var.set(f"Ambulance: {'YES 🚨' if ambulance else 'No'}")
+
+        if emergency_type is not None:
+            etype = str(emergency_type).strip().lower()
+            if etype == "firetruck":
+                self.amb_var.set("Emergency: FIRETRUCK 🚒")
+            elif etype == "ambulance":
+                self.amb_var.set("Emergency: AMBULANCE 🚨")
+            else:
+                self.amb_var.set("Emergency: No")
+        elif ambulance is not None:
+            self.amb_var.set(f"Emergency: {'AMBULANCE 🚨' if ambulance else 'No'}")
 
 
 #manual input
 class ManualDialog(tk.Toplevel):
-    """Popup to collect manual density + ambulance per lane."""
-    def __init__(self, master, lanes, on_submit):
+    """Popup to collect manual density + emergency vehicle per lane."""
+    def __init__(self, master, lanes, on_submit, initial_data=None):
         super().__init__(master, bg=BG)
         self.title("Manual Input")
         self.resizable(False, False)
         self.lanes     = lanes
         self.on_submit = on_submit
+        self.initial_data = initial_data or {}
         self.entries   = {}
-        self.amb_vars  = {}
+        self.emerg_vars = {}
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build()
         self.grab_set()
 
@@ -253,24 +313,36 @@ class ManualDialog(tk.Toplevel):
             tk.Label(row1, text="Vehicles:", font=FONT_B,
                      fg=TEXT, bg=PANEL, width=10,
                      anchor="w").pack(side="left")
+            init_d = str(self.initial_data.get(i, {}).get("density", 0))
             e = tk.Entry(row1, font=FONT_MONO, fg=TEXT, bg=BG,
                          insertbackground=ACCENT, relief="flat",
                          bd=4, width=10)
-            e.insert(0, "0")
+            e.insert(0, init_d)
             e.pack(side="left")
             self.entries[i] = e
 
             row2 = tk.Frame(card, bg=PANEL)
             row2.pack(fill="x", padx=14, pady=(2, 10))
-            tk.Label(row2, text="Ambulance:", font=FONT_B,
+            tk.Label(row2, text="Emergency:", font=FONT_B,
                      fg=TEXT, bg=PANEL, width=10,
                      anchor="w").pack(side="left")
-            var = tk.BooleanVar(value=False)
-            tk.Checkbutton(row2, variable=var, bg=PANEL,
-                           activebackground=PANEL,
-                           selectcolor=BG, fg=TEXT,
-                           text="Yes").pack(side="left")
-            self.amb_vars[i] = var
+
+            init_emerg = self.initial_data.get(i, {}).get("emergency_type", "")
+            if not init_emerg:
+                init_emerg = "ambulance" if self.initial_data.get(i, {}).get("ambulance") else "none"
+            init_emerg = str(init_emerg).strip().lower()
+            if init_emerg not in ("none", "ambulance", "firetruck"):
+                init_emerg = "none"
+
+            var = tk.StringVar(value=init_emerg)
+            for opt_val, opt_lbl in [("none", "None"),
+                                     ("ambulance", "Ambulance 🚨"),
+                                     ("firetruck", "Firetruck 🚒")]:
+                tk.Radiobutton(row2, text=opt_lbl, variable=var,
+                               value=opt_val, font=FONT_B,
+                               fg=TEXT, bg=PANEL, selectcolor=BG,
+                               activebackground=PANEL, activeforeground=ACCENT).pack(side="left", padx=4)
+            self.emerg_vars[i] = var
 
         tk.Button(self, text="RUN CONTROL  ▶",
                   font=("Courier New", 11, "bold"),
@@ -290,31 +362,52 @@ class ManualDialog(tk.Toplevel):
                 messagebox.showerror("Invalid",
                     f"Lane {i+1}: enter a valid positive number.")
                 return
+            sel = self.emerg_vars[i].get().lower()
+            is_emerg = sel in ("ambulance", "firetruck")
             data[i] = {
-                "density":   density,
-                "ambulance": self.amb_vars[i].get()
+                "density": density,
+                "ambulance": sel == "ambulance",
+                "emergency": is_emerg,
+                "emergency_type": sel if is_emerg else "none"
             }
         self.destroy()
         self.on_submit(data)
 
+    def _on_close(self):
+        fallback = self.initial_data if self.initial_data else {
+            i: {"density": 0, "ambulance": False, "emergency": False, "emergency_type": "none"}
+            for i in range(self.lanes)
+        }
+        self.destroy()
+        self.on_submit(fallback)
+
 
 #dashboard
 class Dashboard(tk.Frame):
-    def __init__(self, master, mode, lanes, paths, on_stop):
+    def __init__(self, master, mode, lanes, paths, on_stop, green_time=DEFAULT_GREEN):
         super().__init__(master, bg=BG)
-        self.mode    = mode
-        self.lanes   = lanes
-        self.paths   = paths
+        self.mode = mode
+        self.lanes = lanes
+        self.paths = paths
         self.on_stop = on_stop
+        self.green_time = green_time
+        self.yellow_time = DEFAULT_YELLOW
         self.running = False
-        self.cameras  = {}          # Cameraf instances
-        self.lane_data_lock = threading.Lock()
-        self.lane_data      = {}
-        self.cards   = {}
+        self.cameras = {}          # Cameraf instances
+        self.lane_data = {}
+        self.next_lane_data = None
+        self.next_winner = None
+        self.active_lane = 0
+        self.current_signal = "GREEN"
+        self.time_left = self.green_time
+        self.scanning = False
+        self.cards = {}
+        self._timer_job = None
+        self._video_job = None
         self._build()
 
     def _build(self):
-        #top bar
+        # top bar
         bar = tk.Frame(self, bg=PANEL, pady=10)
         bar.pack(fill="x")
         tk.Label(bar, text="▶ TRAFFIC CONTROL SYSTEM",
@@ -329,7 +422,7 @@ class Dashboard(tk.Frame):
                   padx=16, pady=4, cursor="hand2",
                   command=self._stop).pack(side="right", padx=20)
 
-        #manual trigger button 
+        # manual trigger button 
         if self.mode == 2:
             tk.Button(bar, text="  Enter Values  ",
                       font=FONT_B, fg=BG, bg=YELLOW,
@@ -338,7 +431,7 @@ class Dashboard(tk.Frame):
                       command=self._open_manual).pack(side="right",
                                                        padx=8)
 
-        #lane grid
+        # lane grid
         grid = tk.Frame(self, bg=BG)
         grid.pack(padx=20, pady=20, fill="both", expand=True)
         show_feed = self.mode != 2
@@ -350,7 +443,7 @@ class Dashboard(tk.Frame):
             self.cards[i] = card
             grid.columnconfigure(i % cols, weight=1)
 
-        #log strip
+        # log strip
         log_f = tk.Frame(self, bg=PANEL, height=60)
         log_f.pack(fill="x", side="bottom")
         log_f.pack_propagate(False)
@@ -362,29 +455,289 @@ class Dashboard(tk.Frame):
                  wraplength=860, justify="left").pack(side="left",
                                                        padx=8)
 
-    #lifecycle
+    # lifecycle
     def start(self):
         """Called after the frame is packed."""
         if self.mode in (0, 1):
             t = threading.Thread(target=self._init_cameras, daemon=True)
             t.start()
         else:
-            # manual mode mark ready
-            self.after(0, lambda: self.status_var.set("⬤  READY — press Enter Values"))
+            self.running = True
+            self.status_var.set("⬤  INITIALISING")
+            self.after(0, self._init_manual)
 
     def _init_cameras(self):
         try:
             for i in range(self.lanes):
                 src = i if self.mode == 0 else self.paths[i]
-                self.cameras[i] = Cameraf(i, src)  
-            self.after(0, lambda: self.status_var.set("⬤  RUNNING"))
-            self.running = True
-            self._run_loop()
+                self.cameras[i] = Cameraf(i, src)
         except RuntimeError as e:
             self.after(0, lambda: messagebox.showerror("Camera Error", str(e)))
             self.after(0, self._stop)
+            return
+
+        reset_control()
+        try:
+            lane_data, frames = scan_all_lanes(self.cameras, live=False)
+            res = controlfun(lane_data, self.lanes)
+            self.lane_data = lane_data
+            self.active_lane = res["lane_no"]
+        except Exception as e:
+            self._log(f"Boot scan error: {e}")
+            self.lane_data = {
+                i: {"density": 0, "ambulance": False, "emergency": False, "emergency_type": "none"}
+                for i in range(self.lanes)
+            }
+            self.active_lane = 0
+
+        self.running = True
+        self.current_signal = "GREEN"
+        self.time_left = self.green_time
+
+        def _start_gui():
+            if not self.running:
+                return
+            self.status_var.set(f"⬤  Lane {self.active_lane + 1} GREEN ({self.time_left}s)")
+            for i in range(self.lanes):
+                sig = "GREEN" if i == self.active_lane else "RED"
+                d = self.lane_data.get(i, {})
+                self.cards[i].set_signal(
+                    sig,
+                    density=d.get("density"),
+                    ambulance=d.get("ambulance"),
+                    emergency_type=d.get("emergency_type"),
+                    time_left=self.time_left if sig == "GREEN" else None
+                )
+            etype = self.lane_data.get(self.active_lane, {}).get("emergency_type", "none")
+            if etype == "ambulance":
+                self._log(f"🚨 Ambulance override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
+            elif etype == "firetruck":
+                self._log(f"🚒 Firetruck override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
+            else:
+                self._log(f"Lane {self.active_lane + 1} → GREEN ({self.green_time}s) | others → RED")
+
+            self._video_loop()
+            self._timer_job = self.after(1000, self._tick_timer)
+
+        self.after(0, _start_gui)
+
+    def _init_manual(self):
+        ManualDialog(self, self.lanes, self._on_manual_boot, initial_data=None)
+
+    def _on_manual_boot(self, data):
+        if not self.running:
+            return
+        reset_control()
+        try:
+            res = controlfun(data, self.lanes)
+            self.active_lane = res["lane_no"]
+        except Exception as e:
+            self._log(f"Control error: {e}")
+            self.active_lane = 0
+
+        self.lane_data = data
+        self.current_signal = "GREEN"
+        self.time_left = self.green_time
+
+        self.status_var.set(f"⬤  Lane {self.active_lane + 1} GREEN ({self.time_left}s)")
+        for i in range(self.lanes):
+            sig = "GREEN" if i == self.active_lane else "RED"
+            d = self.lane_data.get(i, {})
+            self.cards[i].set_signal(
+                sig,
+                density=d.get("density"),
+                ambulance=d.get("ambulance"),
+                emergency_type=d.get("emergency_type"),
+                time_left=self.time_left if sig == "GREEN" else None
+            )
+
+        etype = self.lane_data.get(self.active_lane, {}).get("emergency_type", "none")
+        if etype == "ambulance":
+            self._log(f"🚨 Ambulance override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
+        elif etype == "firetruck":
+            self._log(f"🚒 Firetruck override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
+        else:
+            self._log(f"Lane {self.active_lane + 1} → GREEN ({self.green_time}s) | others → RED")
+
+        self._timer_job = self.after(1000, self._tick_timer)
+
+    def _video_loop(self):
+        if not self.running:
+            return
+        for i, cam in self.cameras.items():
+            try:
+                frame = cam.read_frame()
+                if frame is not None and i in self.cards:
+                    self.cards[i].update_frame(frame)
+            except Exception:
+                pass
+        if self.running:
+            self._video_job = self.after(40, self._video_loop)
+
+    def _bg_scan(self):
+        try:
+            lane_data, frames = scan_all_lanes(self.cameras, live=True)
+            res = controlfun(lane_data, self.lanes)
+            self.next_lane_data = lane_data
+            self.next_winner = res["lane_no"]
+        except Exception as e:
+            self._log(f"Scan error: {e}")
+            self.next_lane_data = self.lane_data
+            self.next_winner = (self.active_lane + 1) % self.lanes
+        finally:
+            self.scanning = False
+
+    def _on_manual_cycle(self, data):
+        try:
+            res = controlfun(data, self.lanes)
+            self.next_winner = res["lane_no"]
+            self.next_lane_data = data
+        except Exception as e:
+            self._log(f"Control error: {e}")
+            self.next_winner = (self.active_lane + 1) % self.lanes
+            self.next_lane_data = data
+        finally:
+            self.scanning = False
+
+    def _open_manual(self):
+        if not self.running:
+            return
+        self.scanning = True
+        ManualDialog(self, self.lanes, self._on_manual_cycle, initial_data=self.lane_data)
+
+    def _tick_timer(self):
+        if not self.running:
+            return
+
+        # 1. Hold on YELLOW (0s) while scanning is True
+        if self.time_left <= 0 and self.scanning:
+            self.current_signal = "YELLOW"
+            d = self.lane_data.get(self.active_lane, {})
+            self.cards[self.active_lane].set_signal(
+                "YELLOW",
+                density=d.get("density"),
+                ambulance=d.get("ambulance"),
+                emergency_type=d.get("emergency_type"),
+                time_left=0
+            )
+            self.status_var.set(f"⬤  Lane {self.active_lane + 1} YELLOW (0s)")
+            self._timer_job = self.after(200, self._tick_timer)
+            return
+
+        # 2. Timer expired and scan finished -> switch active lane
+        if self.time_left <= 0 and not self.scanning:
+            if self.next_winner is not None:
+                self.active_lane = self.next_winner
+            else:
+                self.active_lane = (self.active_lane + 1) % self.lanes
+
+            if self.next_lane_data is not None:
+                self.lane_data = self.next_lane_data
+
+            self.next_winner = None
+            self.next_lane_data = None
+            self.time_left = self.green_time
+            self.current_signal = "GREEN"
+
+            for i in range(self.lanes):
+                sig = "GREEN" if i == self.active_lane else "RED"
+                d = self.lane_data.get(i, {})
+                self.cards[i].set_signal(
+                    sig,
+                    density=d.get("density"),
+                    ambulance=d.get("ambulance"),
+                    emergency_type=d.get("emergency_type"),
+                    time_left=self.time_left if sig == "GREEN" else None
+                )
+
+            etype = self.lane_data.get(self.active_lane, {}).get("emergency_type", "none")
+            if etype == "ambulance":
+                self._log(f"🚨 Ambulance override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
+            elif etype == "firetruck":
+                self._log(f"🚒 Firetruck override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
+            else:
+                self._log(f"Lane {self.active_lane + 1} → GREEN ({self.green_time}s) | others → RED")
+
+            self.status_var.set(f"⬤  Lane {self.active_lane + 1} GREEN ({self.time_left}s)")
+            self._timer_job = self.after(1000, self._tick_timer)
+            return
+
+        # 3. Decrement timer
+        self.time_left -= 1
+
+        if self.time_left > self.yellow_time:
+            self.current_signal = "GREEN"
+            d = self.lane_data.get(self.active_lane, {})
+            self.cards[self.active_lane].set_signal(
+                "GREEN",
+                density=d.get("density"),
+                ambulance=d.get("ambulance"),
+                emergency_type=d.get("emergency_type"),
+                time_left=self.time_left
+            )
+            self.status_var.set(f"⬤  Lane {self.active_lane + 1} GREEN ({self.time_left}s)")
+
+        elif self.time_left == self.yellow_time:
+            self.current_signal = "YELLOW"
+            d = self.lane_data.get(self.active_lane, {})
+            self.cards[self.active_lane].set_signal(
+                "YELLOW",
+                density=d.get("density"),
+                ambulance=d.get("ambulance"),
+                emergency_type=d.get("emergency_type"),
+                time_left=self.time_left
+            )
+            self.status_var.set(f"⬤  Lane {self.active_lane + 1} YELLOW ({self.time_left}s)")
+            self._log(f"Lane {self.active_lane + 1} YELLOW — scanning next cycle...")
+
+            self.scanning = True
+            self.next_winner = None
+            self.next_lane_data = None
+
+            if self.mode in (0, 1):
+                threading.Thread(target=self._bg_scan, daemon=True).start()
+            elif self.mode == 2:
+                ManualDialog(self, self.lanes, self._on_manual_cycle, initial_data=self.lane_data)
+
+        elif self.time_left < self.yellow_time and self.time_left > 0:
+            self.current_signal = "YELLOW"
+            d = self.lane_data.get(self.active_lane, {})
+            self.cards[self.active_lane].set_signal(
+                "YELLOW",
+                density=d.get("density"),
+                ambulance=d.get("ambulance"),
+                emergency_type=d.get("emergency_type"),
+                time_left=self.time_left
+            )
+            self.status_var.set(f"⬤  Lane {self.active_lane + 1} YELLOW ({self.time_left}s)")
+
+        elif self.time_left <= 0:
+            if self.scanning:
+                self.current_signal = "YELLOW"
+                d = self.lane_data.get(self.active_lane, {})
+                self.cards[self.active_lane].set_signal(
+                    "YELLOW",
+                    density=d.get("density"),
+                    ambulance=d.get("ambulance"),
+                    emergency_type=d.get("emergency_type"),
+                    time_left=0
+                )
+                self.status_var.set(f"⬤  Lane {self.active_lane + 1} YELLOW (0s)")
+                self._timer_job = self.after(200, self._tick_timer)
+                return
+            else:
+                self._tick_timer()
+                return
+
+        self._timer_job = self.after(1000, self._tick_timer)
 
     def _stop(self):
+        if self._timer_job is not None:
+            self.after_cancel(self._timer_job)
+            self._timer_job = None
+        if self._video_job is not None:
+            self.after_cancel(self._video_job)
+            self._video_job = None
         self.running = False
         self.status_var.set("⬤  STOPPED")
         for c in self.cameras.values():
@@ -397,104 +750,6 @@ class Dashboard(tk.Frame):
     def _log(self, msg):
         ts = time.strftime("%H:%M:%S")
         self.after(0, lambda: self.log_var.set(f"[{ts}]  {msg}"))
-
-    #manual mode
-    def _open_manual(self):
-        ManualDialog(self, self.lanes, self._run_manual)
-
-    def _run_manual(self, data):
-        """Process one manual round and update cards."""
-        try:
-            result = controlfun(data, self.lanes) 
-        except Exception as e:
-            messagebox.showerror("Control Error", str(e))
-            return
-
-        for i in range(self.lanes):
-            sig = "GREEN" if i == result["lane_no"] else "RED"
-            d   = data[i]
-            self.cards[i].set_signal(sig,
-                                     density=d["density"],
-                                     ambulance=d["ambulance"])
-
-        amb_lane = result["lane_no"] if any(
-            data[i]["ambulance"] for i in range(self.lanes)) else None
-        msg = (f"🚨 Ambulance override → Lane {result['lane_no']+1}  GO"
-               if amb_lane is not None
-               else f"Lane {result['lane_no']+1} → GO  |  others → STOP")
-        self._log(msg)
-        self.status_var.set(
-            f"⬤  Lane {result['lane_no']+1} GREEN")
-
-    #camera loop
-    def _run_loop(self):
-        while self.running:
-            lane_data  = {}
-            frames     = {}
-
-            # per-lane threads
-            results_lock = threading.Lock()
-
-            def process_lane(idx):
-                try:
-                    data = self.cameras[idx].cvfun()  
-                    frame = self._grab_raw_frame(idx)
-                    with results_lock:
-                        lane_data[idx]  = data
-                        frames[idx]     = frame
-                except Exception as e:
-                    with results_lock:
-                        lane_data[idx] = {"density": 0, "ambulance": False}
-                        frames[idx]    = None
-                    print(f"Lane {idx} error: {e}")
-
-            threads = [threading.Thread(target=process_lane, args=(i,),
-                                        daemon=True)
-                       for i in range(self.lanes)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-
-            # update frames on main thread
-            for i in range(self.lanes):
-                if frames.get(i) is not None:
-                    f = frames[i]
-                    self.after(0, lambda f=f, idx=i:
-                               self.cards[idx].update_frame(f))
-
-            try:
-                result = controlfun(lane_data, self.lanes)  
-            except Exception as e:
-                self._log(f"Control error: {e}")
-                time.sleep(TIME_INTERVAL)
-                continue
-
-            #update signals on main thread ──
-            for i in range(self.lanes):
-                sig = "GREEN" if i == result["lane_no"] else "RED"
-                d   = lane_data.get(i, {})
-                self.after(0, lambda idx=i, s=sig, d=d:
-                           self.cards[idx].set_signal(
-                               s,
-                               density=d.get("density"),
-                               ambulance=d.get("ambulance")))
-
-            amb = any(lane_data[i].get("ambulance") for i in range(self.lanes))
-            msg = (f"🚨 Ambulance → Lane {result['lane_no']+1} GREEN"
-                   if amb
-                   else f"Lane {result['lane_no']+1} → GREEN  |  others → RED")
-            self._log(msg)
-
-            time.sleep(TIME_INTERVAL)
-
-    def _grab_raw_frame(self, idx):
-        """Grab a raw frame directly for display (no YOLO processing)."""
-        ret, frame = self.cameras[idx].vid.read()
-        if not ret:
-            self.cameras[idx].vid.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, frame = self.cameras[idx].vid.read()
-        return frame if ret else None
 
 
 # app root
@@ -513,11 +768,12 @@ class App(tk.Tk):
         SetupScreen(self, on_start=self._show_dashboard).pack(
             fill="both", expand=True)
 
-    def _show_dashboard(self, mode, lanes, paths):
+    def _show_dashboard(self, mode, lanes, paths, green_time=DEFAULT_GREEN):
         for w in self.winfo_children():
             w.destroy()
         dash = Dashboard(self, mode, lanes, paths,
-                         on_stop=self._show_setup)
+                         on_stop=self._show_setup,
+                         green_time=green_time)
         dash.pack(fill="both", expand=True)
         dash.start()
 
