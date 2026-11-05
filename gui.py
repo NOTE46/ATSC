@@ -15,11 +15,35 @@ except ImportError:
         pass
 
 try:
-    from cvfile import Cameraf, scan_all_lanes
+    from cvfile import (
+        Cameraf,
+        scan_all_lanes,
+        roi_key,
+        validate_roi,
+        crop_roi,
+        canvas_to_frame,
+        frame_to_canvas,
+        load_roi,
+        save_roi,
+    )
 except ImportError:
     from cvfile import Cameraf
     def scan_all_lanes(cameras, live=False):
         return {}, {}
+    def roi_key(source):
+        return str(source)
+    def validate_roi(points, frame_w, frame_h):
+        return points if points and len(points) == 4 else None
+    def crop_roi(frame, points):
+        return frame
+    def canvas_to_frame(x, y, canvas_w, canvas_h, frame_w, frame_h):
+        return (x, y)
+    def frame_to_canvas(x, y, canvas_w, canvas_h, frame_w, frame_h):
+        return (x, y)
+    def load_roi(source):
+        return None
+    def save_roi(source, points):
+        pass
 
 
 def load_config():
@@ -213,6 +237,10 @@ class LaneCard(tk.Frame):
         self.lane_no   = lane_no
         self.show_feed = show_feed
         self._photo    = None
+        self.camera    = None
+        self.is_editing = False
+        self.draft_points = []
+        self.frozen_frame = None
         self._build()
 
     def _build(self):
@@ -220,7 +248,27 @@ class LaneCard(tk.Frame):
         hdr.pack(fill="x")
         tk.Label(hdr, text=f"LANE {self.lane_no + 1}",
                  font=FONT_H, fg=ACCENT, bg=BORDER,
-                 pady=6).pack(side="left", padx=12)
+                 pady=6).pack(side="left", padx=(12, 6))
+
+        if self.show_feed:
+            self.btn_edit_roi = tk.Button(
+                hdr, text="Edit ROI", font=FONT_MONO,
+                fg=ACCENT, bg=BORDER, relief="flat",
+                activebackground=PANEL, activeforeground=ACCENT,
+                padx=6, pady=2, cursor="hand2",
+                command=self.toggle_edit_roi
+            )
+            self.btn_edit_roi.pack(side="left", padx=2)
+
+            self.btn_clear_roi = tk.Button(
+                hdr, text="Clear", font=FONT_MONO,
+                fg=SUBTEXT, bg=BORDER, relief="flat",
+                activebackground=PANEL, activeforeground=RED,
+                padx=6, pady=2, cursor="hand2",
+                command=self.clear_roi
+            )
+            self.btn_clear_roi.pack(side="left", padx=2)
+
         self.sig_label = tk.Label(hdr, text="● WAITING",
                                   font=FONT_B, fg=YELLOW, bg=BORDER)
         self.sig_label.pack(side="right", padx=12)
@@ -230,6 +278,9 @@ class LaneCard(tk.Frame):
                                     bg="#000", bd=0,
                                     highlightthickness=0)
             self.canvas.pack(padx=1, pady=1)
+            self.canvas.bind("<Button-1>", self._on_canvas_click)
+            self.bind("<Escape>", lambda e: self.cancel_edit_roi())
+            self.canvas.bind("<Escape>", lambda e: self.cancel_edit_roi())
 
         stats = tk.Frame(self, bg=PANEL)
         stats.pack(fill="x", padx=12, pady=8)
@@ -240,15 +291,192 @@ class LaneCard(tk.Frame):
         tk.Label(stats, textvariable=self.amb_var,
                  font=FONT_MONO, fg=SUBTEXT, bg=PANEL).pack(side="right")
 
-    def update_frame(self, frame_bgr):
-        """Push a new OpenCV BGR frame to the canvas."""
-        if not self.show_feed:
+    def set_camera(self, cam):
+        self.camera = cam
+
+    def _get_cam(self):
+        return self.camera
+
+    def _get_dashboard(self):
+        p = self.master
+        while p is not None:
+            if isinstance(p, Dashboard):
+                return p
+            p = getattr(p, "master", None)
+        return None
+
+    def _log(self, msg):
+        dash = self._get_dashboard()
+        if dash and hasattr(dash, "_log"):
+            dash._log(msg)
+        else:
+            print(f"[{time.strftime('%H:%M:%S')}] {msg}")
+
+    def start_edit_roi(self):
+        if not getattr(self, "show_feed", False) or getattr(self, "is_editing", False):
             return
-        img = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, (320, 200))
-        pil = Image.fromarray(img)
-        self._photo = ImageTk.PhotoImage(pil)
-        self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
+        cam = self._get_cam()
+        frame = None
+        if cam is not None:
+            if getattr(cam, "last_frame", None) is not None:
+                frame = cam.last_frame.copy()
+            elif hasattr(cam, "read_frame"):
+                frame = cam.read_frame()
+        if frame is None:
+            self._log(f"Lane {self.lane_no + 1}: No frame available to set ROI")
+            return
+
+        self.is_editing = True
+        self.frozen_frame = frame.copy()
+        self.draft_points = []
+        if hasattr(self, "btn_edit_roi"):
+            self.btn_edit_roi.config(text="Cancel", fg=YELLOW)
+        self._redraw_edit_canvas()
+        self._log(f"Lane {self.lane_no + 1}: Click 4 corners of lane ROI (clockwise or counter-clockwise)")
+
+    def cancel_edit_roi(self):
+        if not getattr(self, "is_editing", False):
+            return
+        self.is_editing = False
+        self.draft_points = []
+        last_f = self.frozen_frame
+        self.frozen_frame = None
+        if hasattr(self, "btn_edit_roi"):
+            self.btn_edit_roi.config(text="Edit ROI", fg=ACCENT)
+        self._log(f"Lane {self.lane_no + 1}: ROI edit cancelled")
+        cam = self._get_cam()
+        if cam and getattr(cam, "last_frame", None) is not None:
+            self.update_frame(cam.last_frame)
+        elif last_f is not None:
+            self.update_frame(last_f)
+
+    def toggle_edit_roi(self):
+        if getattr(self, "is_editing", False):
+            self.cancel_edit_roi()
+        else:
+            self.start_edit_roi()
+
+    def clear_roi(self):
+        if getattr(self, "is_editing", False):
+            self.cancel_edit_roi()
+        cam = self._get_cam()
+        if cam and hasattr(cam, "set_roi"):
+            cam.set_roi(None)
+            self._log(f"Lane {self.lane_no + 1}: ROI cleared (using full frame)")
+            if getattr(cam, "last_frame", None) is not None:
+                self.update_frame(cam.last_frame)
+
+    def _on_canvas_click(self, event):
+        if not getattr(self, "is_editing", False) or self.frozen_frame is None:
+            return
+        cw = 320
+        ch = 200
+        if hasattr(self, "canvas"):
+            try:
+                w = self.canvas.winfo_width()
+                h = self.canvas.winfo_height()
+                if w > 1:
+                    cw = w
+                if h > 1:
+                    ch = h
+            except Exception:
+                pass
+        cx = max(0, min(cw - 1, int(getattr(event, "x", 0))))
+        cy = max(0, min(ch - 1, int(getattr(event, "y", 0))))
+        self.draft_points.append((cx, cy))
+        self._redraw_edit_canvas()
+
+        if len(self.draft_points) == 4:
+            fh, fw = self.frozen_frame.shape[:2]
+            frame_pts = [
+                canvas_to_frame(pt_x, pt_y, cw, ch, fw, fh)
+                for pt_x, pt_y in self.draft_points
+            ]
+            valid_pts = validate_roi(frame_pts, fw, fh)
+            cam = self._get_cam()
+            if valid_pts is not None and cam is not None and hasattr(cam, "set_roi"):
+                saved = cam.set_roi(valid_pts)
+                if saved:
+                    self.is_editing = False
+                    self.draft_points = []
+                    last_f = self.frozen_frame
+                    self.frozen_frame = None
+                    if hasattr(self, "btn_edit_roi"):
+                        self.btn_edit_roi.config(text="Edit ROI", fg=ACCENT)
+                    self._log(f"Lane {self.lane_no + 1}: ROI configured successfully")
+                    if last_f is not None:
+                        self.update_frame(last_f)
+                    dash = self._get_dashboard()
+                    if dash and hasattr(dash, "_on_lane_roi_configured"):
+                        dash._on_lane_roi_configured(self.lane_no)
+                    return
+
+            self._log(f"Invalid ROI for Lane {self.lane_no + 1} (area too small) — click 4 corners again")
+            self.draft_points = []
+            self._redraw_edit_canvas()
+
+    def _redraw_edit_canvas(self):
+        if self.frozen_frame is None or not getattr(self, "show_feed", False) or not hasattr(self, "canvas"):
+            return
+        try:
+            img = cv2.cvtColor(self.frozen_frame, cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, (320, 200))
+            pil = Image.fromarray(img)
+            self._photo = ImageTk.PhotoImage(pil)
+            self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
+
+            pts = self.draft_points
+            for i, (cx, cy) in enumerate(pts):
+                r = 4
+                self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=ACCENT, outline="#ffffff", width=1)
+                self.canvas.create_text(cx + 8, cy - 8, text=str(i + 1), fill="#ffffff", font=FONT_MONO)
+                if i > 0:
+                    px, py = pts[i - 1]
+                    self.canvas.create_line(px, py, cx, cy, fill=ACCENT, width=2)
+            if len(pts) == 4:
+                self.canvas.create_line(pts[3][0], pts[3][1], pts[0][0], pts[0][1], fill=ACCENT, width=2)
+        except Exception:
+            pass
+
+    def update_frame(self, frame_bgr):
+        """Push a new OpenCV BGR frame to the canvas and overlay ROI polygon if configured."""
+        if not getattr(self, "show_feed", False) or getattr(self, "is_editing", False) or not hasattr(self, "canvas"):
+            return
+        try:
+            img = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, (320, 200))
+            pil = Image.fromarray(img)
+            self._photo = ImageTk.PhotoImage(pil)
+            self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
+
+            cam = self._get_cam()
+            if cam is not None and hasattr(cam, "get_roi"):
+                roi = cam.get_roi()
+                if roi is not None and len(roi) == 4:
+                    fh, fw = frame_bgr.shape[:2]
+                    cw = 320
+                    ch = 200
+                    try:
+                        w = self.canvas.winfo_width()
+                        h = self.canvas.winfo_height()
+                        if w > 1:
+                            cw = w
+                        if h > 1:
+                            ch = h
+                    except Exception:
+                        pass
+                    canvas_pts = [
+                        frame_to_canvas(fx, fy, cw, ch, fw, fh)
+                        for fx, fy in roi
+                    ]
+                    flat = []
+                    for cx, cy in canvas_pts:
+                        flat.extend([cx, cy])
+                        r = 3
+                        self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=ACCENT, outline="#ffffff")
+                    self.canvas.create_polygon(flat, outline=ACCENT, fill="", width=2)
+        except Exception:
+            pass
 
     def set_signal(self, signal: str, density=None, ambulance=None, emergency_type=None, time_left=None):
         sig = signal.upper()
@@ -422,6 +650,12 @@ class Dashboard(tk.Frame):
                   padx=16, pady=4, cursor="hand2",
                   command=self._stop).pack(side="right", padx=20)
 
+        self.btn_skip_roi = tk.Button(
+            bar, text="Skip ROI (use full frame)", font=FONT_B,
+            fg=BG, bg=YELLOW, relief="flat", padx=10, pady=4,
+            cursor="hand2", command=self._on_skip_roi
+        )
+
         # manual trigger button 
         if self.mode == 2:
             tk.Button(bar, text="  Enter Values  ",
@@ -470,56 +704,118 @@ class Dashboard(tk.Frame):
         try:
             for i in range(self.lanes):
                 src = i if self.mode == 0 else self.paths[i]
-                self.cameras[i] = Cameraf(i, src)
+                cam = Cameraf(i, src)
+                self.cameras[i] = cam
+                if i in self.cards:
+                    self.cards[i].set_camera(cam)
+                cam.read_frame()
         except RuntimeError as e:
             self.after(0, lambda: messagebox.showerror("Camera Error", str(e)))
             self.after(0, self._stop)
             return
 
-        reset_control()
-        try:
-            lane_data, frames = scan_all_lanes(self.cameras, live=False)
-            res = controlfun(lane_data, self.lanes)
-            self.lane_data = lane_data
-            self.active_lane = res["lane_no"]
-        except Exception as e:
-            self._log(f"Boot scan error: {e}")
-            self.lane_data = {
-                i: {"density": 0, "ambulance": False, "emergency": False, "emergency_type": "none"}
-                for i in range(self.lanes)
-            }
-            self.active_lane = 0
+        unconfigured = [
+            i for i, cam in self.cameras.items()
+            if cam.get_roi() is None
+        ]
 
-        self.running = True
-        self.current_signal = "GREEN"
-        self.time_left = self.green_time
+        if unconfigured:
+            def _setup_roi_gui():
+                self.btn_skip_roi.pack(side="right", padx=10)
+                self.status_var.set("⬤  CONFIGURING ROI")
+                self._log("ROI setup: Please configure ROI for each lane, or click 'Skip ROI'")
+                for i, cam in self.cameras.items():
+                    if cam.last_frame is not None and i in self.cards:
+                        self.cards[i].update_frame(cam.last_frame)
+                first = unconfigured[0]
+                if first in self.cards:
+                    self.cards[first].start_edit_roi()
 
-        def _start_gui():
-            if not self.running:
-                return
-            self.status_var.set(f"⬤  Lane {self.active_lane + 1} GREEN ({self.time_left}s)")
-            for i in range(self.lanes):
-                sig = "GREEN" if i == self.active_lane else "RED"
-                d = self.lane_data.get(i, {})
-                self.cards[i].set_signal(
-                    sig,
-                    density=d.get("density"),
-                    ambulance=d.get("ambulance"),
-                    emergency_type=d.get("emergency_type"),
-                    time_left=self.time_left if sig == "GREEN" else None
-                )
-            etype = self.lane_data.get(self.active_lane, {}).get("emergency_type", "none")
-            if etype == "ambulance":
-                self._log(f"🚨 Ambulance override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
-            elif etype == "firetruck":
-                self._log(f"🚒 Firetruck override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
+            self.after(0, _setup_roi_gui)
+        else:
+            self.after(0, self._boot_and_start_cycle)
+
+    def _on_skip_roi(self):
+        if hasattr(self, "btn_skip_roi"):
+            self.btn_skip_roi.pack_forget()
+        for card in self.cards.values():
+            if getattr(card, "is_editing", False):
+                card.cancel_edit_roi()
+        self._log("Skipped ROI setup — using full frames for all lanes")
+        if not self.running:
+            self._boot_and_start_cycle()
+
+    def _on_lane_roi_configured(self, lane_no):
+        if not self.running:
+            unconfigured = [
+                i for i, cam in self.cameras.items()
+                if cam.get_roi() is None
+            ]
+            if unconfigured:
+                next_lane = unconfigured[0]
+                if next_lane in self.cards:
+                    self.cards[next_lane].start_edit_roi()
             else:
-                self._log(f"Lane {self.active_lane + 1} → GREEN ({self.green_time}s) | others → RED")
+                if hasattr(self, "btn_skip_roi"):
+                    self.btn_skip_roi.pack_forget()
+                self._log("All lane ROIs configured successfully.")
+                self._boot_and_start_cycle()
+        else:
+            self._log(f"Lane {lane_no + 1}: ROI updated for live operation.")
 
-            self._video_loop()
-            self._timer_job = self.after(1000, self._tick_timer)
+    def _boot_and_start_cycle(self):
+        if hasattr(self, "btn_skip_roi"):
+            self.btn_skip_roi.pack_forget()
 
-        self.after(0, _start_gui)
+        def _bg_boot():
+            reset_control()
+            try:
+                lane_data, frames = scan_all_lanes(self.cameras, live=False)
+                res = controlfun(lane_data, self.lanes)
+                self.lane_data = lane_data
+                self.active_lane = res["lane_no"]
+            except Exception as e:
+                self._log(f"Boot scan error: {e}")
+                self.lane_data = {
+                    i: {"density": 0, "ambulance": False, "emergency": False, "emergency_type": "none"}
+                    for i in range(self.lanes)
+                }
+                self.active_lane = 0
+
+            self.running = True
+            self.current_signal = "GREEN"
+            self.time_left = self.green_time
+
+            def _start_gui():
+                if not self.running:
+                    return
+                self.status_var.set(f"⬤  Lane {self.active_lane + 1} GREEN ({self.time_left}s)")
+                for i in range(self.lanes):
+                    sig = "GREEN" if i == self.active_lane else "RED"
+                    d = self.lane_data.get(i, {})
+                    self.cards[i].set_signal(
+                        sig,
+                        density=d.get("density"),
+                        ambulance=d.get("ambulance"),
+                        emergency_type=d.get("emergency_type"),
+                        time_left=self.time_left if sig == "GREEN" else None
+                    )
+                etype = self.lane_data.get(self.active_lane, {}).get("emergency_type", "none")
+                if etype == "ambulance":
+                    self._log(f"🚨 Ambulance override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
+                elif etype == "firetruck":
+                    self._log(f"🚒 Firetruck override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
+                else:
+                    self._log(f"Lane {self.active_lane + 1} → GREEN ({self.green_time}s) | others → RED")
+
+                self._video_loop()
+                self._timer_job = self.after(1000, self._tick_timer)
+
+            self.after(0, _start_gui)
+
+        t = threading.Thread(target=_bg_boot, daemon=True)
+        t.start()
+        return t
 
     def _init_manual(self):
         ManualDialog(self, self.lanes, self._on_manual_boot, initial_data=None)
@@ -732,6 +1028,8 @@ class Dashboard(tk.Frame):
         self._timer_job = self.after(1000, self._tick_timer)
 
     def _stop(self):
+        if hasattr(self, "btn_skip_roi"):
+            self.btn_skip_roi.pack_forget()
         if self._timer_job is not None:
             self.after_cancel(self._timer_job)
             self._timer_job = None
