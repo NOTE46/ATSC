@@ -34,6 +34,9 @@ def load_config():
     return {}
 
 
+def clean_path(p):
+    return p.strip().strip('"').strip("'")
+
 def main():
     config = load_config()
     green_options = config.get("green_options", [15, 30, 40, 50, 60])
@@ -84,7 +87,7 @@ def main():
         if ty == 0:
             camera[i] = Cameraf(i, i)
         else:
-            path = input("Enter video path:")
+            path = clean_path(input("Enter video path:"))
             camera[i] = Cameraf(i, path)
 
     try:
