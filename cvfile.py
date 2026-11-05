@@ -28,18 +28,13 @@ def _load_frame_skip():
 FRAME_S = _load_frame_skip()
 
 
-def roi_key(source):
-    """
-    Return the config key for a camera/video source.
-    For int or digit-string `i` -> 'cam{i}'.
-    For file path -> strip surrounding quotes/whitespace and return Path(s).name.
-    """
+def roi_key(source) -> str:
     if isinstance(source, int):
         return f"cam{source}"
-    s = str(source).strip().strip("'\"").strip()
+    s = str(source).strip().strip('"').strip("'")
     if s.isdigit():
         return f"cam{s}"
-    return Path(s).name
+    return Path(s.replace("\\", "/")).name
 
 
 def validate_roi(points, frame_w, frame_h):
