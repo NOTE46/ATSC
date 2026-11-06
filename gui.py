@@ -823,7 +823,8 @@ class Dashboard(tk.Frame):
                     self.cards[i].set_camera(cam)
                 cam.read_frame()
         except RuntimeError as e:
-            self.after(0, lambda: messagebox.showerror("Camera Error", str(e)))
+            err_msg = str(e)
+            self.after(0, lambda: messagebox.showerror("Camera Error", err_msg))
             self.after(0, self._stop)
             return
 
