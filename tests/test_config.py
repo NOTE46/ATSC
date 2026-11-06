@@ -28,6 +28,8 @@ def test_config_required_keys_and_types():
     assert isinstance(cfg.get("emergency_detector"), str)
     assert isinstance(cfg.get("vision_provider"), str)
     assert isinstance(cfg.get("gemini_model"), str)
+    assert isinstance(cfg.get("vision_model"), str)
+    assert isinstance(cfg.get("vision_models"), dict)
     assert isinstance(cfg.get("vision_stitch_limit"), int)
     assert isinstance(cfg.get("emergency_priority"), dict)
     assert isinstance(cfg.get("roi_points"), dict)
@@ -67,3 +69,20 @@ def test_config_stitch_limit():
         cfg = json.load(f)
 
     assert cfg.get("vision_stitch_limit", 0) >= 1
+
+
+@pytest.mark.unit
+def test_config_vision_models():
+    """Verify vision_models has required providers with lists and vision_model matches active provider."""
+    with open("config.json", "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    v_models = cfg.get("vision_models", {})
+    assert "gemini" in v_models and isinstance(v_models["gemini"], list) and len(v_models["gemini"]) > 0
+    assert "groq" in v_models and isinstance(v_models["groq"], list) and len(v_models["groq"]) > 0
+    assert "openrouter" in v_models and isinstance(v_models["openrouter"], list) and len(v_models["openrouter"]) > 0
+
+    active_provider = cfg.get("vision_provider", "gemini")
+    active_model = cfg.get("vision_model")
+    assert active_model in v_models[active_provider]
+

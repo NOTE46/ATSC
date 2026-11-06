@@ -111,3 +111,105 @@ def test_manual_dialog_close_safeguard():
 
     assert dlg.destroy.called
     dlg.on_submit.assert_called_once_with(dlg.initial_data)
+
+
+@pytest.mark.unit
+def test_setupscreen_detector_configuration():
+    """SetupScreen configures detector via set_detector_config on start."""
+    screen = object.__new__(gui.SetupScreen)
+    screen.mode_var = MagicMock()
+    screen.mode_var.get.return_value = 0
+    screen.lane_var = MagicMock()
+    screen.lane_var.get.return_value = 2
+    screen.green_var = MagicMock()
+    screen.green_var.get.return_value = 30
+    screen.on_start = MagicMock()
+
+    screen.provider_var = MagicMock()
+    screen.provider_var.get.return_value = "groq"
+    screen.model_combo = MagicMock()
+    screen.model_combo.get.return_value = "qwen/qwen3.8-27b"
+    screen.btn_refresh_models = MagicMock()
+
+    with patch("gui.set_detector_config") as mock_set_det:
+        screen._start()
+        mock_set_det.assert_called_once_with(
+            detector="vision", provider="groq", vision_model="qwen/qwen3.8-27b"
+        )
+        screen.on_start.assert_called_once_with(0, 2, [], 30)
+
+    # Test Local YOLO choice
+    screen.provider_var.get.return_value = "yolo"
+    screen.model_combo.get.return_value = "Model/custom.pt"
+    with patch("gui.set_detector_config") as mock_set_det2:
+        screen._start()
+        mock_set_det2.assert_called_once_with(
+            detector="yolo", ambulance_model="Model/custom.pt"
+        )
+
+
+@pytest.mark.unit
+def test_dashboard_startup_logs_detector_status(monkeypatch):
+    """Dashboard logs detector provider and model, including fallback indicator when key is missing."""
+    dash = object.__new__(gui.Dashboard)
+    dash.running = True
+    dash.active_lane = 0
+    dash.green_time = 30
+    dash.time_left = 30
+    dash.lanes = 1
+    dash.lane_data = {0: {"density": 3, "emergency_type": "none"}}
+    dash.cards = {0: MagicMock()}
+    dash.status_var = MagicMock()
+    dash._log = MagicMock()
+    dash._video_loop = MagicMock()
+    dash.after = MagicMock()
+    dash.cameras = {}
+
+    with patch("gui.scan_all_lanes", return_value=({0: {"density": 3, "emergency_type": "none"}}, {})):
+        with patch("gui.controlfun", return_value={"lane_no": 0, "signal": "Green"}):
+            # 1. Vision with key present
+            with patch("gui.get_detector_config", return_value={
+                "detector": "vision",
+                "provider": "groq",
+                "active_model": "qwen/qwen3.8-27b",
+                "has_api_key": True,
+                "ambulance_model": "Model/best.pt"
+            }):
+                t = dash._boot_and_start_cycle()
+                t.join(timeout=2)
+                start_gui_fn = dash.after.call_args[0][1]
+                start_gui_fn()
+                dash._log.assert_any_call("Detector: GROQ (qwen/qwen3.8-27b)")
+
+            # 2. Vision without key
+            dash._log.reset_mock()
+            dash.after.reset_mock()
+            with patch("gui.get_detector_config", return_value={
+                "detector": "vision",
+                "provider": "gemini",
+                "active_model": "gemini-3.5-flash-lite",
+                "has_api_key": False,
+                "ambulance_model": "Model/best.pt"
+            }):
+                t = dash._boot_and_start_cycle()
+                t.join(timeout=2)
+                start_gui_fn = dash.after.call_args[0][1]
+                start_gui_fn()
+                dash._log.assert_any_call("Detector: GEMINI (no key -> fallback Model/best.pt)")
+
+            # 3. Local YOLO
+            dash._log.reset_mock()
+            dash.after.reset_mock()
+            with patch("gui.get_detector_config", return_value={
+                "detector": "yolo",
+                "provider": "gemini",
+                "active_model": "Model/best.pt",
+                "has_api_key": False,
+                "ambulance_model": "Model/best.pt"
+            }):
+                t = dash._boot_and_start_cycle()
+                t.join(timeout=2)
+                start_gui_fn = dash.after.call_args[0][1]
+                start_gui_fn()
+                dash._log.assert_any_call("Detector: LOCAL (Model/best.pt)")
+

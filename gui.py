@@ -45,6 +45,23 @@ except ImportError:
     def save_roi(source, points):
         pass
 
+try:
+    from ambdet import get_detector_config, set_detector_config, list_local_models
+except ImportError:
+    def get_detector_config():
+        return {
+            "detector": "vision",
+            "provider": "gemini",
+            "active_model": "gemini-3.5-flash-lite",
+            "ambulance_model": "Model/best.pt",
+            "has_api_key": False,
+            "vision_models": {},
+        }
+    def set_detector_config(detector=None, provider=None, vision_model=None, ambulance_model=None):
+        pass
+    def list_local_models(model_dir="Model"):
+        return ["Model/best.pt"]
+
 
 def load_config():
     cfg_path = Path("config.json")
@@ -151,6 +168,50 @@ class SetupScreen(tk.Frame):
                            indicatoron=False, width=5, relief="flat").pack(side="left",
                                                                           padx=6)
 
+        #emergency detection engine card
+        self.engine_card = tk.Frame(self, bg=PANEL, highlightthickness=1,
+                                    highlightbackground=BORDER)
+        self.engine_card.pack(padx=80, pady=8, fill="x")
+        tk.Label(self.engine_card, text="EMERGENCY DETECTION ENGINE", font=FONT_H,
+                 fg=SUBTEXT, bg=PANEL).pack(anchor="w", padx=20, pady=(18, 6))
+
+        init_cfg = get_detector_config()
+        init_detector = init_cfg.get("detector", "vision")
+        init_provider = init_cfg.get("provider", "gemini")
+        init_choice = "yolo" if init_detector == "yolo" else init_provider
+
+        self.provider_var = tk.StringVar(value=init_choice)
+        row_p = tk.Frame(self.engine_card, bg=PANEL)
+        row_p.pack(anchor="w", padx=20, pady=(0, 10))
+
+        providers = [
+            ("gemini", "Gemini"),
+            ("groq", "Groq"),
+            ("openrouter", "OpenRouter"),
+            ("yolo", "Local YOLO (Model/)")
+        ]
+        for val, lbl in providers:
+            tk.Radiobutton(
+                row_p, text=lbl, variable=self.provider_var, value=val,
+                font=FONT_B, fg=TEXT, bg=PANEL, selectcolor=BG,
+                activebackground=PANEL, activeforeground=ACCENT,
+                command=self._on_provider_change
+            ).pack(side="left", padx=8)
+
+        row_m = tk.Frame(self.engine_card, bg=PANEL)
+        row_m.pack(fill="x", padx=20, pady=(0, 18))
+        tk.Label(row_m, text="Model:", font=FONT_B, fg=TEXT, bg=PANEL, width=8, anchor="w").pack(side="left")
+
+        self.model_combo = ttk.Combobox(row_m, font=FONT_MONO, width=36)
+        self.model_combo.pack(side="left", padx=(0, 8))
+
+        self.btn_refresh_models = tk.Button(
+            row_m, text="↻ Refresh", font=FONT_MONO,
+            fg=ACCENT, bg=BORDER, relief="flat", cursor="hand2", padx=8,
+            command=self._refresh_local_models
+        )
+        self._update_model_options()
+
         #video path card for mode 1)
         self.path_card = tk.Frame(self, bg=PANEL, highlightthickness=1,
                                   highlightbackground=BORDER)
@@ -170,13 +231,57 @@ class SetupScreen(tk.Frame):
         self.start_btn.pack(padx=80, pady=30, fill="x")
 
     #callbacks
+    def _on_provider_change(self):
+        self._update_model_options()
+
+    def _refresh_local_models(self):
+        if self.provider_var.get() == "yolo":
+            models = list_local_models("Model")
+            self.model_combo["values"] = models
+            if models:
+                self.model_combo.set(models[0])
+
+    def _update_model_options(self):
+        choice = self.provider_var.get()
+        cfg = get_detector_config()
+        v_models = cfg.get("vision_models", {})
+
+        if choice == "yolo":
+            self.btn_refresh_models.pack(side="left")
+            local_models = list_local_models("Model")
+            self.model_combo["values"] = local_models
+            curr_amb = cfg.get("ambulance_model", "Model/best.pt")
+            if curr_amb in local_models:
+                self.model_combo.set(curr_amb)
+            elif local_models:
+                self.model_combo.set(local_models[0])
+            else:
+                self.model_combo.set("Model/best.pt")
+        else:
+            self.btn_refresh_models.pack_forget()
+            options = v_models.get(choice, [])
+            self.model_combo["values"] = options
+            if choice == cfg.get("provider") and cfg.get("vision_model") in options:
+                self.model_combo.set(cfg["vision_model"])
+            elif options:
+                self.model_combo.set(options[0])
+            else:
+                self.model_combo.set("")
+
     def _on_mode_change(self):
-        if self.mode_var.get() == 1:
+        mode = self.mode_var.get()
+        if mode == 1:
             self.path_card.pack(padx=80, pady=8, fill="x",
                                  before=self.start_btn)
             self._rebuild_paths()
         else:
             self.path_card.pack_forget()
+
+        if mode == 2:
+            self.engine_card.pack_forget()
+        else:
+            target_before = self.path_card if mode == 1 else self.start_btn
+            self.engine_card.pack(padx=80, pady=8, fill="x", before=target_before)
 
     def _on_lane_change(self):
         if self.mode_var.get() == 1:
@@ -217,6 +322,14 @@ class SetupScreen(tk.Frame):
         mode  = self.mode_var.get()
         lanes = self.lane_var.get()
         green_time = self.green_var.get()
+
+        if mode != 2:
+            choice = self.provider_var.get()
+            selected_model = self.model_combo.get().strip()
+            if choice == "yolo":
+                set_detector_config(detector="yolo", ambulance_model=selected_model)
+            else:
+                set_detector_config(detector="vision", provider=choice, vision_model=selected_model)
 
         if mode == 1:
             paths = [e.get().strip() for e in self._path_entries]
@@ -807,6 +920,19 @@ class Dashboard(tk.Frame):
                     self._log(f"🚒 Firetruck override → Lane {self.active_lane + 1} GO ({self.green_time}s)")
                 else:
                     self._log(f"Lane {self.active_lane + 1} → GREEN ({self.green_time}s) | others → RED")
+
+                det_cfg = get_detector_config()
+                if det_cfg.get("detector") == "vision":
+                    prov_name = det_cfg.get("provider", "gemini").upper()
+                    if not det_cfg.get("has_api_key", False):
+                        amb_m = det_cfg.get("ambulance_model", "Model/best.pt")
+                        self._log(f"Detector: {prov_name} (no key -> fallback {amb_m})")
+                    else:
+                        act_m = det_cfg.get("active_model", "")
+                        self._log(f"Detector: {prov_name} ({act_m})")
+                else:
+                    amb_m = det_cfg.get("ambulance_model", "Model/best.pt")
+                    self._log(f"Detector: LOCAL ({amb_m})")
 
                 self._video_loop()
                 self._timer_job = self.after(1000, self._tick_timer)

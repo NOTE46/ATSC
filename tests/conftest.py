@@ -60,11 +60,19 @@ def reset_controller_state():
 
 @pytest.fixture(autouse=True)
 def reset_ambdet_env_and_warning(monkeypatch):
-    """Reset ambdet's one-time warning flag and remove GEMINI_API_KEY by default."""
+    """Reset ambdet's one-time warning flags, detector overrides, and remove cloud API keys by default."""
     ambdet._warned_missing_api_key = False
+    ambdet._warned_missing_keys.clear()
+    ambdet._reported_vision_failures.clear()
+    ambdet.reset_detector_config()
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     yield
     ambdet._warned_missing_api_key = False
+    ambdet._warned_missing_keys.clear()
+    ambdet._reported_vision_failures.clear()
+    ambdet.reset_detector_config()
 
 
 @pytest.fixture
