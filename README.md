@@ -4,7 +4,7 @@
 ![lint](https://github.com/NOTE46/ATSC/actions/workflows/lint.yml/badge.svg)
 ![python](https://img.shields.io/badge/python-3.13-blue)
 
-ATSC decides which lane of an intersection gets the green light. It counts vehicles in each lane with YOLOv8, checks for ambulances and fire trucks with a vision AI (or a local model), and picks the next lane with a fair priority queue, so emergency vehicles go first and no lane waits forever.
+ATSC decides which lane of an intersection gets the green light. It counts vehicles in each lane with YOLOv26n, checks for ambulances and fire trucks with a vision AI (or a local model), and picks the next lane with a fair priority queue, so emergency vehicles go first and no lane waits forever.
 
 ## Features
 
@@ -32,7 +32,7 @@ cvfile.py        read frames, apply the 4-point ROI mask and crop
         +--------------------------------+
         v                                v
 uafile.py                          ambdet.py
-YOLOv8n vehicle count              stitch 2 lanes per image ->
+YOLOv26n vehicle count              stitch 2 lanes per image ->
 (car, motorcycle, truck, bus)      Gemini / Groq / OpenRouter
                                    or local .pt model
         |                                |
@@ -78,7 +78,7 @@ ATSC/
 ├── gui.py              Tkinter dashboard, ROI editor, setup screen
 ├── main.py             terminal version
 ├── cvfile.py           camera wrapper, ROI mask/crop, scan_all_lanes()
-├── uafile.py           YOLOv8n vehicle counter
+├── uafile.py           YOLOv26n vehicle counter
 ├── ambdet.py           emergency detection (Gemini/Groq/OpenRouter/local), .env loader
 ├── control.py          3-tier priority and anti-starvation controller
 ├── manual_io.py        manual input mode (terminal)
@@ -86,7 +86,7 @@ ATSC/
 ├── .env.example        template for API keys
 ├── requirements.txt    runtime dependencies
 ├── requirements-dev.txt  pytest and coverage
-├── Model/              yolov8n.pt (vehicle counting) + emergency .pt models
+├── Model/              yolov26n.pt (vehicle counting) + emergency .pt models
 ├── tests/              pytest suite (headless, everything mocked)
 └── .github/workflows/  CI: tests and lint
 ```
@@ -105,7 +105,7 @@ pip install -r requirements.txt
 
 **Model weights.** Put these in `Model/`:
 
-- `yolov8n.pt` for vehicle counting
+- `yolov26n.pt` for vehicle counting
 - `best.pt`, or any custom `.pt` model, for local emergency detection
 
 **API keys (optional).** Copy the template and fill in only the providers you use:
