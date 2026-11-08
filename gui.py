@@ -105,16 +105,58 @@ class SetupScreen(tk.Frame):
         self._build()
 
     def _build(self):
-        tk.Label(self, text="▶ TRAFFIC CONTROL SYSTEM",
+        #pinned header
+        header = tk.Frame(self, bg=BG)
+        header.pack(side="top", fill="x", padx=28, pady=(20, 8))
+        tk.Label(header, text="▶ TRAFFIC CONTROL SYSTEM",
                  font=("Courier New", 18, "bold"),
-                 fg=ACCENT, bg=BG).pack(pady=(50, 4))
-        tk.Label(self, text="intelligent lane signal manager",
-                 font=FONT_B, fg=SUBTEXT, bg=BG).pack(pady=(0, 40))
+                 fg=ACCENT, bg=BG).pack()
+        tk.Label(header, text="intelligent lane signal manager",
+                 font=FONT_B, fg=SUBTEXT, bg=BG).pack(pady=(0, 4))
+
+        #pinned bottom start bar (packed before the scrollable body)
+        action_bar = tk.Frame(self, bg=BG)
+        action_bar.pack(side="bottom", fill="x", padx=28, pady=(8, 18))
+        self.start_btn = tk.Button(
+            action_bar, text="START CONTROLLER  →",
+            font=("Courier New", 12, "bold"),
+            fg=BG, bg=ACCENT, relief="flat",
+            activebackground=GREEN, activeforeground=BG,
+            cursor="hand2", pady=12, command=self._start)
+        self.start_btn.pack(fill="x")
+
+        #scrollable middle container
+        middle = tk.Frame(self, bg=BG)
+        middle.pack(fill="both", expand=True, padx=28)
+        self.canvas = tk.Canvas(middle, bg=BG, highlightthickness=0,
+                                height=460)
+        scrollbar = ttk.Scrollbar(middle, orient="vertical",
+                                  command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self.body_frame = tk.Frame(self.canvas, bg=BG)
+        self._canvas_window = self.canvas.create_window(
+            (0, 0), window=self.body_frame, anchor="nw")
+        self.body_frame.columnconfigure(0, weight=1, uniform="setup_col")
+        self.body_frame.columnconfigure(1, weight=1, uniform="setup_col")
+        self.body_frame.bind("<Configure>", self._on_body_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        self.col_left = tk.Frame(self.body_frame, bg=BG)
+        self.col_left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.col_right = tk.Frame(self.body_frame, bg=BG)
+        self.col_right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+
+        middle.bind("<Enter>", self._bind_mousewheel)
+        middle.bind("<Leave>", self._unbind_mousewheel)
+        self.bind("<Destroy>", self._on_destroy)
 
         #mode card
-        card = tk.Frame(self, bg=PANEL, highlightthickness=1,
+        card = tk.Frame(self.col_left, bg=PANEL, highlightthickness=1,
                         highlightbackground=BORDER)
-        card.pack(padx=80, pady=8, fill="x")
+        card.pack(fill="x", pady=8)
         tk.Label(card, text="INPUT MODE", font=FONT_H,
                  fg=SUBTEXT, bg=PANEL).pack(anchor="w", padx=20, pady=(18, 6))
 
@@ -132,9 +174,9 @@ class SetupScreen(tk.Frame):
         tk.Label(card, text="", bg=PANEL).pack(pady=4)
 
         #lanes card
-        card2 = tk.Frame(self, bg=PANEL, highlightthickness=1,
+        card2 = tk.Frame(self.col_left, bg=PANEL, highlightthickness=1,
                          highlightbackground=BORDER)
-        card2.pack(padx=80, pady=8, fill="x")
+        card2.pack(fill="x", pady=8)
         tk.Label(card2, text="NUMBER OF LANES", font=FONT_H,
                  fg=SUBTEXT, bg=PANEL).pack(anchor="w", padx=20,
                                             pady=(18, 6))
@@ -151,9 +193,9 @@ class SetupScreen(tk.Frame):
                                                               padx=6)
 
         #green duration card
-        card3 = tk.Frame(self, bg=PANEL, highlightthickness=1,
+        card3 = tk.Frame(self.col_left, bg=PANEL, highlightthickness=1,
                          highlightbackground=BORDER)
-        card3.pack(padx=80, pady=8, fill="x")
+        card3.pack(fill="x", pady=8)
         tk.Label(card3, text="GREEN SIGNAL DURATION (SECONDS)", font=FONT_H,
                  fg=SUBTEXT, bg=PANEL).pack(anchor="w", padx=20,
                                             pady=(18, 6))
@@ -169,9 +211,9 @@ class SetupScreen(tk.Frame):
                                                                           padx=6)
 
         #emergency detection engine card
-        self.engine_card = tk.Frame(self, bg=PANEL, highlightthickness=1,
+        self.engine_card = tk.Frame(self.col_right, bg=PANEL, highlightthickness=1,
                                     highlightbackground=BORDER)
-        self.engine_card.pack(padx=80, pady=8, fill="x")
+        self.engine_card.pack(fill="x", pady=(0, 14))
         tk.Label(self.engine_card, text="EMERGENCY DETECTION ENGINE", font=FONT_H,
                  fg=SUBTEXT, bg=PANEL).pack(anchor="w", padx=20, pady=(18, 6))
 
@@ -204,6 +246,8 @@ class SetupScreen(tk.Frame):
 
         self.model_combo = ttk.Combobox(row_m, font=FONT_MONO, width=36)
         self.model_combo.pack(side="left", padx=(0, 8))
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.model_combo.bind(seq, self._on_combo_mousewheel)
 
         self.btn_refresh_models = tk.Button(
             row_m, text="↻ Refresh", font=FONT_MONO,
@@ -213,7 +257,7 @@ class SetupScreen(tk.Frame):
         self._update_model_options()
 
         #video path card for mode 1)
-        self.path_card = tk.Frame(self, bg=PANEL, highlightthickness=1,
+        self.path_card = tk.Frame(self.col_right, bg=PANEL, highlightthickness=1,
                                   highlightbackground=BORDER)
         tk.Label(self.path_card, text="VIDEO FILES", font=FONT_H,
                  fg=SUBTEXT, bg=PANEL).pack(anchor="w", padx=20,
@@ -221,14 +265,40 @@ class SetupScreen(tk.Frame):
         self.path_frame = tk.Frame(self.path_card, bg=PANEL)
         self.path_frame.pack(padx=20, pady=(0, 18), fill="x")
 
-        #start button
-        self.start_btn = tk.Button(
-            self, text="START SYSTEM  ▶",
-            font=("Courier New", 12, "bold"),
-            fg=BG, bg=ACCENT, relief="flat",
-            activebackground=GREEN, activeforeground=BG,
-            cursor="hand2", pady=12, command=self._start)
-        self.start_btn.pack(padx=80, pady=30, fill="x")
+    #scroll helpers
+    def _on_body_configure(self, _event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfigure(self._canvas_window, width=event.width)
+
+    def _bind_mousewheel(self, _event=None):
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel_linux)
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel_linux)
+
+    def _unbind_mousewheel(self, _event=None):
+        self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
+
+    def _on_mousewheel(self, event):
+        self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        return "break"
+
+    def _on_mousewheel_linux(self, event):
+        self.canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+        return "break"
+
+    def _on_combo_mousewheel(self, event):
+        if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0:
+            self.canvas.yview_scroll(-1, "units")
+        else:
+            self.canvas.yview_scroll(1, "units")
+        return "break"
+
+    def _on_destroy(self, _event=None):
+        self._unbind_mousewheel()
 
     #callbacks
     def _on_provider_change(self):
@@ -270,18 +340,17 @@ class SetupScreen(tk.Frame):
 
     def _on_mode_change(self):
         mode = self.mode_var.get()
-        if mode == 1:
-            self.path_card.pack(padx=80, pady=8, fill="x",
-                                 before=self.start_btn)
-            self._rebuild_paths()
-        else:
-            self.path_card.pack_forget()
+        self.engine_card.pack_forget()
+        self.path_card.pack_forget()
 
-        if mode == 2:
-            self.engine_card.pack_forget()
-        else:
-            target_before = self.path_card if mode == 1 else self.start_btn
-            self.engine_card.pack(padx=80, pady=8, fill="x", before=target_before)
+        if mode in (0, 1):
+            self.engine_card.pack(fill="x", pady=(0, 14))
+        if mode == 1:
+            self._rebuild_paths()
+            self.path_card.pack(fill="x", pady=(0, 14))
+
+        self.body_frame.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _on_lane_change(self):
         if self.mode_var.get() == 1:
@@ -1184,6 +1253,7 @@ class App(tk.Tk):
         self.title("Traffic Control System")
         self.configure(bg=BG)
         self.geometry("940x700")
+        self.minsize(760, 520)
         self.resizable(True, True)
         self._show_setup()
 
