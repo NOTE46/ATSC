@@ -3,7 +3,7 @@
   "default_green": 30,
   "yellow_time": 5,
   "frame_skip": 5,
-  "vehicle_model": "Model/yolov8n.pt",
+  "vehicle_model": "Model/yolo26n.pt",
   "ambulance_model": "Model/best.pt",
   "emergency_detector": "vision",
   "vision_provider": "gemini",
