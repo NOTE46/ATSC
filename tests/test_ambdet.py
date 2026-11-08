@@ -303,11 +303,12 @@ def test_security_sanitized_exceptions_never_leak_api_keys(fake_frame, monkeypat
 
 @pytest.mark.unit
 def test_list_local_models_discovery_and_ordering(tmp_path):
-    """list_local_models discovers .pt files, excludes yolov8n.pt if other models exist, and puts best.pt first."""
+    """list_local_models discovers .pt files, excludes base vehicle models if other models exist, and puts best.pt first."""
     # 1. Multiple models including best.pt and yolov8n.pt
     (tmp_path / "custom_b.pt").touch()
     (tmp_path / "custom_a.pt").touch()
     (tmp_path / "yolov8n.pt").touch()
+    (tmp_path / "yolo26n.pt").touch()
     (tmp_path / "best.pt").touch()
 
     found = ambdet.list_local_models(tmp_path)
@@ -316,6 +317,7 @@ def test_list_local_models_discovery_and_ordering(tmp_path):
     # yolov8n.pt must be excluded because other .pt files exist
     names = [Path(p).name for p in found]
     assert "yolov8n.pt" not in names
+    assert "yolo26n.pt" not in names
     assert "custom_a.pt" in names
     assert "custom_b.pt" in names
     for p in found:
@@ -325,9 +327,10 @@ def test_list_local_models_discovery_and_ordering(tmp_path):
     only_yolo_dir = tmp_path / "only_yolo"
     only_yolo_dir.mkdir()
     (only_yolo_dir / "yolov8n.pt").touch()
+    (only_yolo_dir / "yolo26n.pt").touch()
     found_yolo = ambdet.list_local_models(only_yolo_dir)
-    assert len(found_yolo) == 1
-    assert Path(found_yolo[0]).name == "yolov8n.pt"
+    assert found_yolo == ["Model/best.pt"]
+
 
     # 3. Empty directory or non-existent
     empty_dir = tmp_path / "empty"

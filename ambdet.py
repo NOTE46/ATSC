@@ -70,8 +70,8 @@ def _load_config():
 
 def list_local_models(model_dir="Model"):
     """
-    Scan model_dir for .pt files, excluding yolov8n.pt if other .pt models exist,
-    sorting best.pt first, and normalizing with forward slashes.
+    Scan model_dir for .pt files, excluding base vehicle models (yolo26n.pt, yolov8n.pt)
+    if other .pt models exist, sorting best.pt first, and normalizing with forward slashes.
     """
     p = Path(model_dir)
     if not p.is_dir():
@@ -80,10 +80,11 @@ def list_local_models(model_dir="Model"):
     if not files:
         return ["Model/best.pt"]
 
-    non_yolo = [f for f in files if f.name != "yolov8n.pt"]
-    targets = non_yolo if non_yolo else files
-    targets.sort(key=lambda x: (0 if x.name == "best.pt" else 1, x.name.lower()))
-    return [f.as_posix() for f in targets]
+    non_base = [f for f in files if f.name not in ("yolo26n.pt", "yolov8n.pt")]
+    if not non_base:
+        return ["Model/best.pt"]
+    non_base.sort(key=lambda x: (0 if x.name == "best.pt" else 1, x.name.lower()))
+    return [f.as_posix() for f in non_base]
 
 
 def set_detector_config(detector=None, provider=None, vision_model=None, ambulance_model=None):

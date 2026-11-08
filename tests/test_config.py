@@ -24,6 +24,7 @@ def test_config_required_keys_and_types():
     assert isinstance(cfg.get("yellow_time"), int)
     assert isinstance(cfg.get("frame_skip"), int)
     assert isinstance(cfg.get("vehicle_model"), str)
+    assert cfg.get("vehicle_model") == "Model/yolo26n.pt"
     assert isinstance(cfg.get("ambulance_model"), str)
     assert isinstance(cfg.get("emergency_detector"), str)
     assert isinstance(cfg.get("vision_provider"), str)

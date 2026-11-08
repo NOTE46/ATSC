@@ -19,7 +19,7 @@ def _get_vehicle_model():
     if _vehicle_model is None:
         with _yolo_lock:
             if _vehicle_model is None:
-                model_path = "Model/yolov8n.pt"
+                model_path = "Model/yolo26n.pt"
                 config_path = Path("config.json")
                 if config_path.exists():
                     try:
@@ -34,7 +34,7 @@ def _get_vehicle_model():
 
 def uamodel(frame):
     """
-    Thread-safe vehicle counter using YOLOv8.
+    Thread-safe vehicle counter using YOLO26n.
     Counts bounding boxes with class in {'car', 'motorcycle', 'truck', 'bus'}.
     Returns a dictionary conforming to the ATSC shared data contract.
     """

@@ -76,3 +76,14 @@ def test_uamodel_empty_boxes(fake_frame):
 def test_uamodel_never_calls_ambulance_detect(fake_frame):
     """uamodel must not import or call ambulance_detect (decoupled)."""
     assert not hasattr(uafile, "ambulance_detect")
+
+
+@pytest.mark.unit
+def test_vehicle_model_default_path():
+    """Verify default fallback vehicle model path is Model/yolo26n.pt."""
+    with patch.object(uafile, "_vehicle_model", None), \
+         patch.object(uafile, "model", None), \
+         patch("uafile.Path.exists", return_value=False), \
+         patch("uafile.YOLO") as mock_yolo:
+        uafile._get_vehicle_model()
+        mock_yolo.assert_called_once_with("Model/yolo26n.pt")
