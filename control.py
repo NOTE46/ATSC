@@ -25,6 +25,22 @@ def _load_priorities():
         return default_prio
 
 
+def _load_starvation_threshold(lanes):
+    """Read starvation_threshold from config.json with fallback to lanes."""
+    cfg_path = Path(__file__).resolve().parent / "config.json"
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return lanes
+    val = cfg.get("starvation_threshold")
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return lanes
+    if val < 1:
+        return lanes
+    return int(val)
+
+
 def reset_control():
     """Reset internal wait-count and last-lane state."""
     global _wait_counts, _last_lane
@@ -37,7 +53,7 @@ def controlfun(data, lanes):
     """
     Select active green lane using 3-tier priority controller:
     - Tier 1: Emergency Override (highest lane_prio, density, wait_count)
-    - Tier 2: Anti-Starvation Queue (cooldown & wait_counts >= lanes with traffic)
+    - Tier 2: Anti-Starvation Queue (cooldown & wait_counts >= threshold with traffic)
     - Tier 3: Weighted Density Score (density + wait*3, or fair rotation on zero traffic)
     """
     global _wait_counts, _last_lane
@@ -109,10 +125,11 @@ def controlfun(data, lanes):
                 candidate_lanes = list(range(lanes))
 
             # Tier 2 (Anti-Starvation Queue):
-            # Starving lanes with _wait_counts[i] >= lanes and density > 0
+            # Starving lanes with _wait_counts[i] >= threshold and density > 0
+            threshold = _load_starvation_threshold(lanes)
             starving_lanes = [
                 i for i in candidate_lanes
-                if _wait_counts.get(i, 0) >= lanes and densities[i] > 0
+                if _wait_counts.get(i, 0) >= threshold and densities[i] > 0
             ]
             if starving_lanes:
                 # Winner selected by highest (_wait_counts[i], density)

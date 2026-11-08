@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import urllib.error
@@ -445,3 +447,78 @@ def test_detect_emergencies_batch_provider_routing_and_failure_log(fake_frame, c
             assert res_fail[0]["emergency_type"] == "ambulance"
             captured = capsys.readouterr()
             assert "Vision call failed (groq HTTP 500); using local model" in captured.out
+
+
+@pytest.mark.unit
+def test_detect_batch_runs_vision_chunks_concurrently(fake_frame, monkeypatch):
+    """4 lanes with stitch_limit 2 => exactly 2 vision calls that run concurrently; no local fallback."""
+    monkeypatch.setenv("GEMINI_API_KEY", "mock_key")
+    frames = {i: fake_frame.copy() for i in range(4)}
+    barrier = threading.Barrier(2, timeout=1.0)
+    lane_types = {0: "ambulance", 1: "none", 2: "firetruck", 3: "ambulance"}
+    cloud_calls = []
+
+    def fake_vision(stitched, lane_ids, model_name=None):
+        cloud_calls.append(list(lane_ids))
+        # Blocks until both chunk workers arrive; serial execution would time out
+        # with BrokenBarrierError and silently fall back to the local model.
+        barrier.wait()
+        return {lid: lane_types[lid] for lid in lane_ids}
+
+    local_mock = MagicMock(return_value="none")
+
+    with patch.object(ambdet, "_load_config", return_value={"vision_stitch_limit": 2}):
+        with patch.object(ambdet, "_call_gemini_vision", side_effect=fake_vision):
+            with patch.object(ambdet, "_detect_local_type", local_mock):
+                start = time.monotonic()
+                result = ambdet.detect_emergencies_batch(frames)
+                elapsed = time.monotonic() - start
+
+    assert len(cloud_calls) == 2
+    assert sorted(cloud_calls) == [[0, 1], [2, 3]]
+    local_mock.assert_not_called()
+    assert result[0]["emergency_type"] == "ambulance"
+    assert result[1]["emergency_type"] == "none"
+    assert result[2]["emergency_type"] == "firetruck"
+    assert result[3]["emergency_type"] == "ambulance"
+    assert result[0]["emergency"] is True
+    assert result[1]["emergency"] is False
+    assert result[2]["emergency"] is True
+    assert result[3]["emergency"] is True
+    assert elapsed < 0.28
+
+
+@pytest.mark.unit
+def test_detect_batch_mixed_chunk_failure_falls_back_per_chunk(fake_frame, capsys, monkeypatch):
+    """A failing chunk falls back to local YOLO only for its lanes; the healthy chunk keeps cloud results."""
+    monkeypatch.setenv("GEMINI_API_KEY", "mock_key")
+    frames = {i: fake_frame.copy() for i in range(4)}
+    cloud_calls = []
+    local_frames = []
+
+    def fake_vision(stitched, lane_ids, model_name=None):
+        cloud_calls.append(list(lane_ids))
+        if list(lane_ids) == [0, 1]:
+            return {0: "ambulance", 1: "none"}
+        raise RuntimeError("chunk 2 failed")
+
+    def fake_local(frame, model_path=None):
+        local_frames.append(frame)
+        return "firetruck"
+
+    with patch.object(ambdet, "_load_config", return_value={"vision_stitch_limit": 2}):
+        with patch.object(ambdet, "_call_gemini_vision", side_effect=fake_vision):
+            with patch.object(ambdet, "_detect_local_type", side_effect=fake_local):
+                result = ambdet.detect_emergencies_batch(frames)
+
+    assert len(cloud_calls) == 2
+    assert result[0]["emergency_type"] == "ambulance"
+    assert result[1]["emergency_type"] == "none"
+    assert result[2]["emergency_type"] == "firetruck"
+    assert result[3]["emergency_type"] == "firetruck"
+    # Local fallback ran only for the two frames of the failed chunk (original objects,
+    # not the freshly stitched images).
+    assert len(local_frames) == 2
+    assert {id(f) for f in local_frames} == {id(frames[2]), id(frames[3])}
+    captured = capsys.readouterr()
+    assert "Vision call failed (chunk 2 failed); using local model" in captured.out
