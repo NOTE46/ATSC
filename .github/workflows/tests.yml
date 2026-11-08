@@ -13,4 +13,4 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install numpy opencv-python-headless Pillow -r requirements-dev.txt
-      - run: python -m pytest --cov=. --cov-report=term-missing
+      - run: python -m pytest --cov=. --cov-report=term-missing --cov-fail-under=70

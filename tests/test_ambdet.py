@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import urllib.error
-import numpy as np
 import pytest
 import ambdet
 
