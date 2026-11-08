@@ -1,4 +1,5 @@
 import base64
+import concurrent.futures
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ _runtime_config = {}
 _warned_missing_api_key = False
 _warned_missing_keys = set()
 _reported_vision_failures = set()
+_vision_failure_lock = threading.Lock()
 
 ALLOWLIST = {"ambulance", "firetruck", "none"}
 
@@ -227,14 +229,15 @@ def ambulance_detect(frame):
     return _detect_local_type(frame) != "none"
 
 
-def _stitch_lanes(lane_pairs):
+def _stitch_lanes(lane_pairs, stitch_limit=None):
     """
     Accept up to vision_stitch_limit pairs (lane_id, frame) where frame is not None,
     resize to (480, 360), draw solid black header bar (0, 0) to (480, 32) with white
     text 'LANE {lane_id}', and horizontally concatenate with cv2.hconcat.
     """
-    cfg = _load_config()
-    stitch_limit = cfg.get("vision_stitch_limit", 2)
+    if stitch_limit is None:
+        cfg = _load_config()
+        stitch_limit = cfg.get("vision_stitch_limit", 2)
 
     valid_pairs = [(lid, f) for lid, f in lane_pairs if f is not None][:stitch_limit]
     if not valid_pairs:
@@ -519,44 +522,53 @@ def detect_emergencies_batch(frames_dict):
                 }
             return results
 
-        for i in range(0, len(sorted_lane_ids), stitch_limit):
-            chunk_ids = sorted_lane_ids[i:i + stitch_limit]
-            chunk_pairs = [(lid, frames_dict[lid]) for lid in chunk_ids if frames_dict[lid] is not None]
+        stitch_limit = max(1, int(stitch_limit))
+        valid_pairs = [(lid, frames_dict[lid]) for lid in sorted_lane_ids]
+        chunks = [valid_pairs[i:i + stitch_limit] for i in range(0, len(valid_pairs), stitch_limit)]
+
+        def _process_chunk(chunk):
+            """Stitch and classify one chunk using snapshotted config only."""
+            chunk_lane_ids = [lid for lid, _ in chunk]
             try:
-                stitched = _stitch_lanes(chunk_pairs)
+                stitched = _stitch_lanes(chunk, stitch_limit=stitch_limit)
                 if stitched is None:
-                    raise ValueError("No valid frames to stitch")
+                    return {lid: "none" for lid, _ in chunk}
 
                 if provider == "gemini":
-                    vision_map = _call_gemini_vision(stitched, chunk_ids, active_model)
+                    vision_map = _call_gemini_vision(stitched, chunk_lane_ids, active_model)
                 elif provider in ("groq", "openrouter"):
-                    vision_map = _call_openai_compat_vision(stitched, chunk_ids, provider, active_model)
+                    vision_map = _call_openai_compat_vision(stitched, chunk_lane_ids, provider, active_model)
                 else:
                     raise RuntimeError(f"Unsupported vision provider: {provider}")
 
-                for lid in chunk_ids:
-                    etype = vision_map.get(lid, "none")
-                    is_emerg = etype in ("ambulance", "firetruck")
-                    results[lid] = {
-                        "ambulance": is_emerg,
-                        "emergency": is_emerg,
-                        "emergency_type": etype
-                    }
-            except Exception as e:
-                err_msg = str(e)
-                if provider not in _reported_vision_failures:
-                    print(f"Vision call failed ({err_msg}); using local model")
-                    _reported_vision_failures.add(provider)
+                return {lid: vision_map.get(lid, "none") for lid in chunk_lane_ids}
+            except Exception as exc:
+                err_msg = str(exc)
+                with _vision_failure_lock:
+                    if provider not in _reported_vision_failures:
+                        print(f"Vision call failed ({err_msg}); using local model")
+                        _reported_vision_failures.add(provider)
                 # Fallback per lane using active local YOLO model
-                for lid in chunk_ids:
-                    f = frames_dict[lid]
-                    etype = _detect_local_type(f, local_model_path)
-                    is_emerg = etype in ("ambulance", "firetruck")
-                    results[lid] = {
-                        "ambulance": is_emerg,
-                        "emergency": is_emerg,
-                        "emergency_type": etype
-                    }
+                fallback = {}
+                for lid, frame in chunk:
+                    fallback[lid] = _detect_local_type(frame, model_path=local_model_path)
+                return fallback
+
+        if len(chunks) == 1:
+            chunk_results = [_process_chunk(chunks[0])]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(chunks)) as ex:
+                chunk_results = list(ex.map(_process_chunk, chunks))
+
+        for chunk, chunk_result in zip(chunks, chunk_results):
+            for lid, _ in chunk:
+                etype = chunk_result.get(lid, "none")
+                is_emerg = etype in ("ambulance", "firetruck")
+                results[lid] = {
+                    "ambulance": is_emerg,
+                    "emergency": is_emerg,
+                    "emergency_type": etype
+                }
         return results
 
     # detector == "yolo" or fallback

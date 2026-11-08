@@ -1,3 +1,4 @@
+import json
 import pytest
 import control
 
@@ -131,3 +132,44 @@ def test_starvation_prevention_over_multiple_rounds(make_lane_data):
 
     # Cooldown and anti-starvation ensure Lane 1 gets green multiple times
     assert lane1_greens >= 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("raw_cfg,expected", [
+    ('{"starvation_threshold": 3}', 3),
+    ('{}', 4),
+    ('{"starvation_threshold": null}', 4),
+    ('{"starvation_threshold": 0}', 4),
+    ('{"starvation_threshold": true}', 4),
+    ('{invalid json', 4),
+])
+def test_load_starvation_threshold_fallbacks(tmp_path, monkeypatch, raw_cfg, expected):
+    """_load_starvation_threshold returns the configured value or falls back to lanes."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(raw_cfg, encoding="utf-8")
+    monkeypatch.setattr(control, "__file__", str(tmp_path / "control.py"))
+
+    assert control._load_starvation_threshold(4) == expected
+
+
+@pytest.mark.unit
+def test_tier2_threshold_3_on_four_lanes(make_lane_data, tmp_path, monkeypatch):
+    """Tier 2 starvation requires wait_count >= configured threshold 3 on 4 lanes."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"starvation_threshold": 3}), encoding="utf-8")
+    monkeypatch.setattr(control, "__file__", str(tmp_path / "control.py"))
+
+    lanes = 4
+    data = make_lane_data([50, 1, 1, 5])
+
+    # Lane 3 is one cycle shy of starvation: higher-density lane 0 wins Tier 3.
+    control._wait_counts = {0: 0, 1: 0, 2: 0, 3: 2}
+    control._last_lane = None
+    res_not_starving = control.controlfun(data, lanes)
+    assert res_not_starving["lane_no"] == 0
+
+    # At exactly the threshold, Lane 3 wins Tier 2 despite its lower density.
+    control._wait_counts = {0: 0, 1: 0, 2: 0, 3: 3}
+    control._last_lane = None
+    res_starving = control.controlfun(data, lanes)
+    assert res_starving["lane_no"] == 3

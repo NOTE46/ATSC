@@ -60,3 +60,46 @@ def test_main_cli_cycle_execution():
 
     assert mock_reset.called
     assert mock_cam.releasevid.called
+
+
+@pytest.mark.unit
+def test_main_scan_error_during_yellow_rotates_lane(make_lane_data, capsys):
+    """A worker scan RuntimeError prints the resilient warning and rotates to the next lane."""
+    boot_lane_data = make_lane_data([5, 2])
+    scan_mock = MagicMock(side_effect=[(boot_lane_data, {}), RuntimeError("boom")])
+
+    inputs = ["1", "2", "3", "v1.mp4", "v2.mp4"]
+    with patch("builtins.input", side_effect=inputs):
+        with patch("main.Cameraf", side_effect=[MagicMock(), MagicMock()]):
+            with patch("main.reset_control"):
+                with patch("main.scan_all_lanes", scan_mock):
+                    with patch("main.controlfun", return_value={"lane_no": 0, "signal": "Green"}):
+                        with patch("main.load_config", return_value={
+                            "green_options": [3], "default_green": 3, "yellow_time": 1
+                        }):
+                            # 3 countdown sleeps in cycle 1, then stop the loop in cycle 2
+                            with patch("time.sleep", side_effect=[None, None, None, KeyboardInterrupt]):
+                                main.main()
+
+    captured = capsys.readouterr()
+    assert scan_mock.call_count == 2
+    assert captured.out.count("[WARN] Scan error: boom") == 1
+    assert "Lane 1 -> Lane 2 GREEN" in captured.out
+
+
+@pytest.mark.unit
+def test_main_camera_init_failure_releases_opened_cameras():
+    """If a later camera fails to open, already-opened cameras are released in finally."""
+    first_cam = MagicMock()
+    cameraf_mock = MagicMock(side_effect=[first_cam, RuntimeError("camera fail")])
+
+    inputs = ["1", "2", "30", "v1.mp4", "v2.mp4"]
+    with patch("builtins.input", side_effect=inputs):
+        with patch("main.Cameraf", cameraf_mock):
+            with patch("main.load_config", return_value={
+                "green_options": [30], "default_green": 30, "yellow_time": 5
+            }):
+                main.main()
+
+    assert cameraf_mock.call_count == 2
+    assert first_cam.releasevid.called
