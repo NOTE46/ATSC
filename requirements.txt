@@ -1,0 +1,6 @@
+# tkinter ships with Python; on Linux install python3-tk.
+numpy==2.4.4
+opencv-python==4.13.0.92
+Pillow==12.2.0
+torch==2.11.0
+ultralytics==8.4.33

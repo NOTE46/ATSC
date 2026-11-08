@@ -1,0 +1,37 @@
+{
+  "green_options": [15, 30, 40, 50, 60],
+  "default_green": 30,
+  "yellow_time": 5,
+  "frame_skip": 5,
+  "vehicle_model": "Model/yolo26n.pt",
+  "ambulance_model": "Model/best.pt",
+  "emergency_detector": "vision",
+  "vision_provider": "gemini",
+  "gemini_model": "gemini-2.5-flash",
+  "vision_model": "gemini-3.5-flash-lite",
+  "vision_models": {
+    "gemini": [
+      "gemini-3.5-flash-lite",
+      "gemini-3.8-flash",
+      "gemini-3.6-flash",
+      "gemini-2.5-flash-lite"
+    ],
+    "groq": [
+      "qwen/qwen3.8-27b",
+      "qwen/qwen3.6-27b"
+    ],
+    "openrouter": [
+      "google/gemma-4-26b-a4b-it:free",
+      "google/gemma-4-31b-it:free",
+      "nvidia/nemotron-3.5-super-vl:free",
+      "openrouter/free"
+    ]
+  },
+  "vision_stitch_limit": 2,
+  "emergency_priority": {
+    "ambulance": 2,
+    "firetruck": 1,
+    "none": 0
+  },
+  "roi_points": {}
+}
