@@ -33,5 +33,6 @@
     "firetruck": 1,
     "none": 0
   },
+  "starvation_threshold": 3,
   "roi_points": {}
 }
