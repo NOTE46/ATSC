@@ -1,3 +1,4 @@
+import csv
 import json
 import pytest
 import control
@@ -173,3 +174,135 @@ def test_tier2_threshold_3_on_four_lanes(make_lane_data, tmp_path, monkeypatch):
     control._last_lane = None
     res_starving = control.controlfun(data, lanes)
     assert res_starving["lane_no"] == 3
+
+
+def _read_log_rows(path=None):
+    target = path or control.DECISION_LOG_PATH
+    with open(target, newline="", encoding="utf-8") as f:
+        return list(csv.reader(f))
+
+
+@pytest.mark.unit
+def test_decision_log_schema_tiers_and_legacy_emergency(make_lane_data):
+    """CSV headers and rows record all tiers, lane attributes, and legacy ambulance fallback."""
+    assert control.controlfun(make_lane_data([5, 2], ["ambulance", "none"]), 2)["lane_no"] == 0
+
+    legacy = {
+        0: {"density": 10, "emergency_type": "none"},
+        1: {"density": 2, "ambulance": True},
+    }
+    assert control.controlfun(legacy, 2)["lane_no"] == 1
+
+    control.reset_control()
+    control._wait_counts = {0: 0, 1: 0, 2: 3}
+    control._last_lane = 0
+    assert control.controlfun(make_lane_data([0, 50, 3]), 3)["lane_no"] == 2
+
+    control.reset_control()
+    control._wait_counts = {0: 0, 1: 2}
+    control._last_lane = None
+    assert control.controlfun(make_lane_data([10, 6]), 2)["lane_no"] == 1
+
+    control.reset_control()
+    control._last_lane = 0
+    assert control.controlfun(make_lane_data([0, 0, 0]), 3)["lane_no"] == 1
+
+    rows = _read_log_rows()
+    assert rows[0] == control.LOG_HEADERS
+    assert rows.count(control.LOG_HEADERS) == 1
+    assert all(len(row) == len(control.LOG_HEADERS) for row in rows)
+
+    data_rows = rows[1:]
+    assert len(data_rows) == 5
+    assert [row[1] for row in data_rows] == ["2", "2", "3", "2", "3"]
+    assert [row[2] for row in data_rows] == ["0", "1", "2", "1", "1"]
+    assert [row[3] for row in data_rows] == [
+        "emergency", "emergency", "starvation", "density", "rotation"
+    ]
+    assert [row[4] for row in data_rows] == [
+        "0:5|1:2",
+        "0:10|1:2",
+        "0:0|1:50|2:3",
+        "0:10|1:6",
+        "0:0|1:0|2:0",
+    ]
+    assert [row[5] for row in data_rows] == [
+        "0:ambulance|1:none",
+        "0:none|1:ambulance",
+        "0:none|1:none|2:none",
+        "0:none|1:none",
+        "0:none|1:none|2:none",
+    ]
+    assert all(row[0] for row in data_rows)
+
+    before = len(rows)
+    assert control.controlfun({}, 0) == {"lane_no": 0, "signal": "Green"}
+    assert len(_read_log_rows()) == before
+
+
+@pytest.mark.unit
+def test_decision_log_records_pre_update_wait_counts(make_lane_data):
+    """The starvation winner is logged with its wait count from before the decision."""
+    control._wait_counts = {0: 0, 1: 0, 2: 3}
+    control._last_lane = 0
+
+    assert control.controlfun(make_lane_data([0, 50, 3]), 3)["lane_no"] == 2
+    assert control._wait_counts[2] == 0
+
+    rows = _read_log_rows()
+    assert rows[0] == control.LOG_HEADERS
+    assert len(rows) == 2
+    assert rows[1][6] == "0:0|1:0|2:3"
+
+
+@pytest.mark.unit
+def test_decision_log_rollover_overwrites_backup(monkeypatch, make_lane_data):
+    """The log rotates at MAX_LOG_BYTES and replaces an existing backup cleanly."""
+    monkeypatch.setattr(control, "MAX_LOG_BYTES", 120)
+    data = make_lane_data([10, 5])
+    control.controlfun(data, 2)
+    control.controlfun(data, 2)
+
+    log_path = control.DECISION_LOG_PATH
+    backup_path = log_path.with_name(log_path.name + ".1")
+    assert backup_path.exists()
+    assert len(_read_log_rows()) == 2
+    assert len(_read_log_rows(backup_path)) == 2
+
+    backup_before = backup_path.read_bytes()
+    control.controlfun(make_lane_data([1, 1]), 2)
+    backup_after = backup_path.read_bytes()
+
+    assert backup_after != backup_before
+    rows = _read_log_rows()
+    backup_rows = _read_log_rows(backup_path)
+    assert rows[0] == control.LOG_HEADERS and len(rows) == 2
+    assert backup_rows[0] == control.LOG_HEADERS and len(backup_rows) == 2
+
+
+@pytest.mark.unit
+def test_decision_log_none_path_is_noop(monkeypatch, make_lane_data):
+    """A None log path disables logging without affecting the decision."""
+    monkeypatch.setattr(control, "DECISION_LOG_PATH", None)
+    assert control.controlfun(make_lane_data([5, 2]), 2) == {"lane_no": 0, "signal": "Green"}
+
+
+@pytest.mark.unit
+def test_decision_log_directory_path_does_not_crash(monkeypatch, tmp_path, make_lane_data):
+    """Opening a directory as the log file is swallowed and the decision still returns."""
+    monkeypatch.setattr(control, "DECISION_LOG_PATH", tmp_path)
+    assert control.controlfun(make_lane_data([5, 2]), 2) == {"lane_no": 0, "signal": "Green"}
+
+
+@pytest.mark.unit
+def test_decision_log_rollover_error_does_not_crash(monkeypatch, make_lane_data):
+    """A rotation OSError is swallowed and the decision still returns."""
+    log_path = control.DECISION_LOG_PATH
+    monkeypatch.setattr(control, "MAX_LOG_BYTES", 10)
+    log_path.write_bytes(b"x" * 20)
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("disk error")
+
+    monkeypatch.setattr(control.os, "replace", fail_replace)
+    assert control.controlfun(make_lane_data([1, 9]), 2) == {"lane_no": 1, "signal": "Green"}
