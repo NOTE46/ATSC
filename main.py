@@ -108,20 +108,24 @@ def main():
                 elif remaining == yellow_time:
                     print(f"[Lane {active_lane + 1} YELLOW] Switching in {remaining}s — scanning traffic...")
 
-                    def _cli_scan():
+                    def _cli_scan(decision, active, prev_data):
                         try:
                             new_data, _ = scan_all_lanes(camera, live=False)
-                            next_decision["result"] = controlfun(new_data, lanes)
-                            next_decision["data"] = new_data
+                            decision["result"] = controlfun(new_data, lanes)
+                            decision["data"] = new_data
                         except Exception as e:
                             print(f"  [WARN] Scan error: {e} — rotating lane")
-                            next_decision["result"] = {
-                                "lane_no": (active_lane + 1) % lanes,
+                            decision["result"] = {
+                                "lane_no": (active + 1) % lanes,
                                 "signal": "Green",
                             }
-                            next_decision["data"] = lane_data
+                            decision["data"] = prev_data
 
-                    scan_thread = threading.Thread(target=_cli_scan, daemon=True)
+                    scan_thread = threading.Thread(
+                        target=_cli_scan,
+                        args=(next_decision, active_lane, lane_data),
+                        daemon=True,
+                    )
                     scan_thread.start()
                     time.sleep(1)
                 else:

@@ -206,6 +206,49 @@ def test_main_scan_timeout_rotates_without_result(capsys, make_lane_data):
 
 
 @pytest.mark.unit
+def test_cli_scan_late_thread_uses_its_own_cycle_state():
+    """A slow cycle-1 scan writes to cycle 1's decision dict, not cycle 2's."""
+    class FakeThread:
+        created = []
+
+        def __init__(self, target=None, args=(), daemon=None, **kw):
+            self.target, self.args = target, args
+            FakeThread.created.append(self)
+            if len(FakeThread.created) == 3:
+                raise KeyboardInterrupt  # stop at the start of cycle 3
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    FakeThread.created = []
+    lanes = 2
+    lane_data = {0: {"density": 5, "emergency_type": "none"}, 1: {"density": 2, "emergency_type": "none"}}
+
+    with patch("builtins.input", side_effect=["0", str(lanes), "3"]):
+        with patch("main.Cameraf", return_value=MagicMock()):
+            with patch("main.reset_control"):
+                with patch("main.scan_all_lanes", return_value=(lane_data, {})):
+                    with patch("main.controlfun", return_value={"lane_no": 0, "signal": "Green"}):
+                        with patch("main.load_config", return_value={
+                            "green_options": [3], "default_green": 3, "yellow_time": 2
+                        }):
+                            with patch.object(main.threading, "Thread", FakeThread):
+                                with patch("time.sleep"):
+                                    main.main()
+
+    t1, t2 = FakeThread.created[0], FakeThread.created[1]
+    with patch("main.scan_all_lanes", side_effect=RuntimeError("boom")):
+        t1.target(*t1.args)
+
+    assert t1.args[0] is not t2.args[0]
+    assert t1.args[0]["result"]["lane_no"] == (t1.args[1] + 1) % lanes
+    assert t2.args[0].get("result") is None
+
+
+@pytest.mark.unit
 def test_main_quoted_video_path_and_release_error_is_swallowed(capsys):
     """Mode 1 cleans quoted paths; teardown suppresses releasevid errors."""
     cam = MagicMock()
