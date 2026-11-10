@@ -1,5 +1,6 @@
 import json
 import os
+import tkinter as tk
 from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
@@ -477,4 +478,117 @@ def test_lanecard_letterbox_click_mapping_ignores_black_bars():
     card._on_canvas_click(inside)
     assert card.draft_points == [(400, 225)]
     assert gui.canvas_to_frame(400, 225, 800, 450, 1920, 1080) == (960, 540)
+
+
+@pytest.mark.unit
+def test_body_box_narrow_window_uses_full_width():
+    """A narrow canvas uses full width; height fills the taller canvas."""
+    assert gui.body_box(800, 600, 500, 1100) == (0, 800, 600)
+
+
+@pytest.mark.unit
+def test_body_box_fullscreen_is_full_bleed():
+    """A large canvas uses the full width and height with no floating island."""
+    assert gui.body_box(2500, 1300, 500, 1100) == (0, 2500, 1300)
+
+
+@pytest.mark.unit
+def test_body_box_scrolls_when_content_is_taller():
+    """Content taller than the canvas sets the window height to the content."""
+    assert gui.body_box(1000, 400, 900, 1100) == (0, 1000, 900)
+
+
+@pytest.mark.unit
+def test_draw_preview_tile_skips_tiny_and_centers_text():
+    """Tiles at or below 10px are skipped; realized tiles center one label."""
+    screen = object.__new__(gui.SetupScreen)
+    tile = MagicMock()
+    screen._preview_canvases = [tile]
+    screen.mode_var = MagicMock()
+    screen.mode_var.get.return_value = 0
+    screen._path_entries = []
+
+    screen._draw_preview_tile(0, 5, 120)
+    screen._draw_preview_tile(0, 8, 8)
+    tile.create_text.assert_not_called()
+    tile.delete.assert_not_called()
+
+    screen._draw_preview_tile(0, 400, 120)
+    tile.delete.assert_called_once_with("all")
+    args, kwargs = tile.create_text.call_args
+    assert args == (200, 60)
+    assert kwargs["text"] == "L1  ● CAM 0"
+    assert kwargs["font"] == gui.FONT_MONO
+
+
+@pytest.mark.unit
+def test_tile_size_requires_laid_out_cell_and_keeps_16_9():
+    """Cells at or below 10px are unlaid; tiles follow width or cap at 16:9."""
+    assert gui.tile_size(5, 520) is None
+    assert gui.tile_size(10, 520) is None
+    assert gui.tile_size(480, 520) == (480, 270)
+    assert gui.tile_size(1000, 520) == (520, 292)
+
+
+@pytest.mark.unit
+def test_center_y_centers_content_and_clamps_at_top():
+    """Content shorter than the canvas is centered; taller content starts at 0."""
+    assert gui.center_y(1300, 500) == 400
+    assert gui.center_y(400, 900) == 0
+    assert gui.center_y(600, 600) == 0
+
+
+@pytest.mark.unit
+def test_resize_tiles_applies_size_once_and_is_idempotent():
+    """Tiles get one 16:9 configure call; an unchanged size is a no-op."""
+    class _FakeTile:
+        def __init__(self):
+            self.calls = []
+
+        def configure(self, **kw):
+            self.calls.append(kw)
+
+        def grid_info(self):
+            return {"padx": 4}
+
+    screen = object.__new__(gui.SetupScreen)
+    screen.preview_holder = MagicMock()
+    screen.preview_holder.winfo_width.return_value = 1000
+    tiles = [_FakeTile(), _FakeTile()]
+    screen._preview_canvases = tiles
+    screen._tile_size = None
+
+    screen._resize_tiles()
+    for tile in tiles:
+        assert tile.calls == [{"width": 492, "height": 277}]
+
+    screen._resize_tiles()
+    for tile in tiles:
+        assert len(tile.calls) == 1
+
+
+@pytest.mark.unit
+def test_setup_screen_initial_summary_and_attributes():
+    """A fresh SetupScreen fills SUMMARY and exposes every required attribute."""
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display is not available")
+    root.withdraw()
+    screen = None
+    try:
+        screen = gui.SetupScreen(root, on_start=lambda *a: None)
+        assert screen._summary_vars["Mode"][0].get() == "Live Camera"
+        assert screen._summary_vars["Lanes"][0].get() == "2"
+        assert screen._summary_vars["Green"][0].get() == f"{gui.DEFAULT_GREEN}s"
+        assert screen._summary_vars["Status"][0].get() == "● ready"
+        for name in ("engine_card", "path_card", "canvas", "body_frame",
+                     "col_left", "col_right", "mode_var", "lane_var",
+                     "green_var", "provider_var", "model_combo",
+                     "btn_refresh_models", "start_btn"):
+            assert hasattr(screen, name), name
+    finally:
+        if screen is not None:
+            screen.destroy()
+        root.destroy()
 

@@ -222,6 +222,7 @@ DEFAULT_YELLOW = CONFIG.get("yellow_time", 5)
 TIME_INTERVAL = 2
 
 _UI_SCALE = 1.0
+SETUP_MAX_W = 1100
 
 
 def scale_px(val):
@@ -232,6 +233,27 @@ def scale_px(val):
         return int(round(val * _UI_SCALE))
     except Exception:
         return int(val)
+
+
+def body_box(canvas_w, canvas_h, req_h, max_w=None):
+    """Return (x, width, height) for the scroll body window."""
+    return 0, max(1, int(canvas_w)), max(int(canvas_h), int(req_h))
+
+
+def center_y(canvas_h, req_h):
+    """Top offset that centers content of height req_h in a canvas of height canvas_h."""
+    return max(0, (int(canvas_h) - int(req_h)) // 2)
+
+
+def tile_size(cell_w, max_w=None):
+    """Return (w, h) for a 16:9 preview tile in a grid cell, or None if the cell is not laid out yet."""
+    if cell_w <= 10:
+        return None
+    w = int(cell_w)
+    if max_w is not None:
+        w = min(w, int(max_w))
+    return w, max(1, round(w * 9 / 16))
+
 
 # Initialise theme from config
 if CONFIG.get("theme") in PALETTES:
@@ -782,6 +804,7 @@ class SetupScreen(tk.Frame):
         scrollbar = ttk.Scrollbar(scroll_wrap, orient="vertical",
                                   command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scrollbar.set)
+        self._scrollbar = scrollbar
         scrollbar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
 
@@ -789,25 +812,25 @@ class SetupScreen(tk.Frame):
         Theme.bind(self.body_frame, "bg", "BG")
         self._body_window = self.canvas.create_window(
             (0, 0), window=self.body_frame, anchor="nw")
-
-        def _sync_scroll(_e=None):
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-        def _sync_width(event):
-            self.canvas.itemconfig(self._body_window, width=event.width)
-
-        self.body_frame.bind("<Configure>", _sync_scroll)
-        self.canvas.bind("<Configure>", _sync_width)
+        self._last_body_box = None
+        self.body_frame.bind("<Configure>", self._layout_body)
+        self.canvas.bind("<Configure>", self._layout_body)
+        self.canvas.bind("<Enter>", self._bind_wheel)
+        self.canvas.bind("<Leave>", self._unbind_wheel)
 
         self.col_left = tk.Frame(self.body_frame, width=scale_px(290))
         Theme.bind(self.col_left, "bg", "BG")
-        self.col_left.pack(side="left", fill="y", padx=(20, 10), pady=16)
-        self.col_left.pack_propagate(False)
+        self.col_left.grid(row=0, column=0, sticky="nsew",
+                           padx=(20, 10), pady=16)
 
         self.col_right = tk.Frame(self.body_frame)
         Theme.bind(self.col_right, "bg", "BG")
-        self.col_right.pack(side="left", fill="both", expand=True,
+        self.col_right.grid(row=0, column=1, sticky="nsew",
                             padx=(10, 20), pady=16)
+        self.body_frame.columnconfigure(0, weight=1,
+                                        minsize=scale_px(310))
+        self.body_frame.columnconfigure(1, weight=3)
+        self.body_frame.rowconfigure(0, weight=1)
 
         self._build_left(self.col_left)
         self._build_right(self.col_right)
@@ -822,6 +845,50 @@ class SetupScreen(tk.Frame):
         self.log_var = tk.StringVar(value="Waiting for configuration…")
         make_label(strip, textvariable=self.log_var, font=FONT_MONO,
                    fg_key="TEXT", bg_key="PANEL").pack(side="left")
+        self._update_summary()
+
+    def _layout_body(self, _e=None):
+        try:
+            cw = self.canvas.winfo_width()
+            ch = self.canvas.winfo_height()
+            req_h = self.body_frame.winfo_reqheight()
+            x, w, h = body_box(cw, ch, req_h)
+            y = 0
+            show_sb = req_h > ch + 4
+            layout = (x, w, h, y, show_sb)
+            if layout == getattr(self, "_last_body_box", None):
+                return
+            self._last_body_box = layout
+            self.canvas.coords(self._body_window, x, y)
+            self.canvas.itemconfig(self._body_window, width=w, height=h)
+            self.canvas.configure(scrollregion=(0, 0, cw, h))
+            if show_sb:
+                self._scrollbar.pack(side="right", fill="y",
+                                     before=self.canvas)
+            else:
+                self._scrollbar.pack_forget()
+        except Exception:
+            pass
+
+    def _bind_wheel(self, _e=None):
+        try:
+            self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        except Exception:
+            pass
+
+    def _unbind_wheel(self, _e=None):
+        try:
+            self.canvas.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
+
+    def _on_mousewheel(self, event):
+        try:
+            if self.body_frame.winfo_reqheight() <= self.canvas.winfo_height():
+                return
+            self.canvas.yview_scroll(int(-event.delta / 120), "units")
+        except Exception:
+            pass
 
     # ── left rail ──────────────────────────────────────────────────
     def _build_left(self, parent):
@@ -840,7 +907,8 @@ class SetupScreen(tk.Frame):
         lane_row.pack(fill="x")
         for n in (1, 2, 3, 4):
             make_pill_radio(lane_row, str(n), self.lane_var, n,
-                            command=self._on_lane_change).pack(side="left", padx=2)
+                            command=self._on_lane_change
+                            ).pack(side="left", fill="x", expand=True, padx=2)
 
         # GREEN DURATION
         green_body = make_section(parent, "GREEN DURATION", {"pady": (0, 10)})
@@ -850,10 +918,11 @@ class SetupScreen(tk.Frame):
         green_row.pack(fill="x")
         for g in GREEN_OPTIONS:
             make_pill_radio(green_row, f"{g}s", self.green_var, g
-                            ).pack(side="left", padx=2)
+                            ).pack(side="left", fill="x", expand=True, padx=2)
 
         # DETECTOR
         det_body = make_section(parent, "DETECTOR", {"pady": (0, 10)})
+        self.engine_card = det_body
         cfg = get_detector_config()
         init_choice = "yolo" if cfg.get("detector") == "yolo" \
                       else cfg.get("provider", "gemini")
@@ -870,6 +939,10 @@ class SetupScreen(tk.Frame):
         row.pack(fill="x")
         self.model_combo = ttk.Combobox(row, font=FONT_MONO, width=22)
         self.model_combo.pack(side="left", fill="x", expand=True)
+        self.model_combo.bind("<<ComboboxSelected>>",
+                              lambda e: self._update_summary())
+        self.model_combo.bind("<KeyRelease>", lambda e: self._update_summary())
+        self.model_combo.bind("<MouseWheel>", self._on_combo_mousewheel)
         self.btn_refresh_models = tk.Button(row, text="↻", font=FONT_MONO,
                                             relief="flat", padx=6, cursor="hand2",
                                             command=self._refresh_local_models)
@@ -881,11 +954,11 @@ class SetupScreen(tk.Frame):
 
     # ── right pane ─────────────────────────────────────────────────
     def _build_right(self, parent):
-        # LIVE PREVIEW
+        # LANES card (packed last so it claims the remaining space)
         prev_outer = tk.Frame(parent, highlightthickness=1, bd=0)
         Theme.bind(prev_outer, "bg", "PANEL")
         Theme.bind(prev_outer, "highlightbackground", "BORDER")
-        prev_outer.pack(fill="x", pady=(0, 10))
+        self._lanes_card = prev_outer
 
         prev_hdr = make_label(prev_outer, text="LANES", font=FONT_MONO,
                               fg_key="SUBTEXT", bg_key="PANEL", anchor="w")
@@ -893,7 +966,8 @@ class SetupScreen(tk.Frame):
 
         self.preview_holder = tk.Frame(prev_outer)
         Theme.bind(self.preview_holder, "bg", "PANEL")
-        self.preview_holder.pack(fill="x", padx=14, pady=(0, 12))
+        self.preview_holder.pack(fill="both", expand=True,
+                                 padx=14, pady=(4, 14))
 
         # SOURCE FILES (mode-dependent)
         self.path_card = tk.Frame(parent, highlightthickness=1, bd=0)
@@ -909,11 +983,10 @@ class SetupScreen(tk.Frame):
         Theme.bind(self.path_frame, "bg", "PANEL")
         self.path_frame.pack(fill="x", padx=14, pady=(0, 12))
 
-        # SUMMARY
+        # SUMMARY (2-column KPI grid)
         sum_outer = tk.Frame(parent, highlightthickness=1, bd=0)
         Theme.bind(sum_outer, "bg", "PANEL")
         Theme.bind(sum_outer, "highlightbackground", "BORDER")
-        sum_outer.pack(fill="x", pady=(0, 10))
 
         sum_hdr = make_label(sum_outer, text="SUMMARY", font=FONT_MONO,
                              fg_key="SUBTEXT", bg_key="PANEL", anchor="w")
@@ -924,59 +997,115 @@ class SetupScreen(tk.Frame):
         self.summary_body.pack(fill="x", padx=14, pady=(0, 12))
 
         self._summary_vars = {}
-        for key in ("Mode", "Lanes", "Green", "Detector", "Status"):
-            row = tk.Frame(self.summary_body)
-            Theme.bind(row, "bg", "PANEL")
-            row.pack(fill="x", pady=1)
-            make_label(row, text=key, font=FONT_MONO, fg_key="SUBTEXT",
-                       bg_key="PANEL", width=10, anchor="w").pack(side="left")
+        for idx, key in enumerate(("Mode", "Lanes", "Green", "Detector", "Status")):
+            cell = tk.Frame(self.summary_body)
+            Theme.bind(cell, "bg", "PANEL")
+            cell.grid(row=idx // 2, column=idx % 2,
+                      sticky="nsew", padx=6, pady=3)
+            make_label(cell, text=key.upper(), font=FONT_MONO,
+                       fg_key="SUBTEXT", bg_key="PANEL", anchor="w"
+                       ).pack(fill="x")
             var = tk.StringVar(value="—")
-            lbl = make_label(row, textvariable=var, font=FONT_MONO,
+            lbl = make_label(cell, textvariable=var, font=FONT_B,
                              fg_key="TEXT", bg_key="PANEL", anchor="w")
-            lbl.pack(side="left", fill="x", expand=True)
+            lbl.pack(fill="x")
             self._summary_vars[key] = (var, lbl)
+        for col in range(2):
+            self.summary_body.columnconfigure(col, weight=1)
 
-        # START button pinned at bottom of right pane
+        # START pinned at the bottom; SUMMARY and SOURCE FILES stack above it.
         start_wrap = tk.Frame(parent)
         Theme.bind(start_wrap, "bg", "BG")
-        start_wrap.pack(fill="x", side="bottom")
         self.start_btn = RoundedButton(start_wrap, text="START CONTROLLER  →",
                                        command=self._start, radius=10, height=44)
         self.start_btn.pack(fill="x")
+        start_wrap.pack(side="bottom", fill="x")
+        sum_outer.pack(side="bottom", fill="x", pady=(0, 10))
+        prev_outer.pack(fill="both", expand=True, pady=(0, 12))
 
     # ── preview logic ──────────────────────────────────────────────
     def _rebuild_previews(self):
         for w in self.preview_holder.winfo_children():
             w.destroy()
         self._preview_canvases = []
+        self._tile_size = None
+        if not getattr(self, "_tiles_bound", False):
+            self.preview_holder.bind("<Configure>", self._resize_tiles)
+            self._tiles_bound = True
         n = self.lane_var.get()
         cols = 2 if n > 1 else 1
+        rows = (n + cols - 1) // cols
         for i in range(n):
-            c = tk.Canvas(self.preview_holder, height=90, bd=0, highlightthickness=0)
+            c = tk.Canvas(self.preview_holder, height=90, bd=0,
+                          highlightthickness=1)
             Theme.bind(c, "bg", "INPUT_BG")
-            c.grid(row=i // cols, column=i % cols, padx=4, pady=4, sticky="nsew")
+            Theme.bind(c, "highlightbackground", "BORDER")
+            c.grid(row=i // cols, column=i % cols, padx=6, pady=6,
+                   sticky="nsew")
+            c.bind("<Configure>",
+                   lambda e, i=i: self._draw_preview_tile(i, e.width, e.height))
             self._preview_canvases.append(c)
-        for col in range(cols):
-            self.preview_holder.columnconfigure(col, weight=1)
+        for col in range(2):
+            self.preview_holder.columnconfigure(
+                col, weight=1 if col < cols else 0)
+        for row in range(2):
+            self.preview_holder.rowconfigure(
+                row, weight=1 if row < rows else 0)
         self.preview_holder.update_idletasks()
+        self._resize_tiles()
         self._refresh_preview_text()
 
-    def _refresh_preview_text(self):
+    def _resize_tiles(self, event=None):
+        try:
+            holder_w = self.preview_holder.winfo_width()
+            cols = 2 if len(self._preview_canvases) > 1 else 1
+            pad = 6
+            if self._preview_canvases:
+                try:
+                    pad = int(self._preview_canvases[0].grid_info().get("padx", 6))
+                except Exception:
+                    pass
+            cell_w = holder_w / cols - pad * 2
+            size = tile_size(cell_w)
+            if size is None:
+                return
+            if size == getattr(self, "_tile_size", None):
+                return
+            w, h = size
+            for c in self._preview_canvases:
+                c.configure(width=w, height=h)
+            self._tile_size = size
+        except tk.TclError:
+            pass
+
+    def _draw_preview_tile(self, i, w, h):
+        if w <= 10 or h <= 10:
+            return
+        try:
+            c = self._preview_canvases[i]
+        except (IndexError, AttributeError):
+            return
+        c.delete("all")
         mode = self.mode_var.get()
+        if mode == 1 and i < len(self._path_entries):
+            path = self._path_entries[i].get().strip()
+            text = f"L{i+1}  {'✓ READY' if path else '— IDLE'}"
+        elif mode == 0:
+            text = f"L{i+1}  ● CAM {i}"
+        else:
+            text = f"L{i+1}"
+        c.create_text(w//2, h//2, text=text, fill=Theme.get("SUBTEXT"),
+                      font=FONT_MONO)
+
+    def _refresh_preview_text(self):
         for i, c in enumerate(self._preview_canvases):
-            c.delete("all")
-            c.update_idletasks()
-            w = c.winfo_width() or 100
-            h = c.winfo_height() or 90
-            if mode == 1 and i < len(self._path_entries):
-                path = self._path_entries[i].get().strip()
-                text = f"L{i+1}  {'✓ ready' if path else '— idle'}"
-            elif mode == 0:
-                text = f"L{i+1}  cam {i}"
-            else:
-                text = f"L{i+1}"
-            c.create_text(w//2, h//2, text=text, fill=Theme.get("SUBTEXT"),
-                          font=FONT_MONO)
+            try:
+                w = c.winfo_width()
+                h = c.winfo_height()
+            except Exception:
+                continue
+            if w > 10 and h > 10:
+                self._draw_preview_tile(i, w, h)
 
     # ── callbacks ──────────────────────────────────────────────────
     def _tick_clock(self):
@@ -987,6 +1116,7 @@ class SetupScreen(tk.Frame):
         if self._clock_job:
             try: self.after_cancel(self._clock_job)
             except Exception: pass
+        self._unbind_wheel()
 
     def on_settings_saved(self, updates):
         """Refresh the green-default selection and summary after a settings save."""
@@ -1000,7 +1130,8 @@ class SetupScreen(tk.Frame):
     def _on_mode_change(self):
         self._rebuild_previews()
         if self.mode_var.get() == 1:
-            self.path_card.pack(fill="x", pady=(0, 10), before=self.summary_body.master)
+            self.path_card.pack(side="bottom", fill="x", pady=(0, 10),
+                                before=self._lanes_card)
             self._rebuild_paths()
         else:
             self.path_card.pack_forget()
@@ -1051,12 +1182,17 @@ class SetupScreen(tk.Frame):
         self._update_model_options()
         self._update_summary()
 
+    def _on_combo_mousewheel(self, event):
+        """Keep mouse-wheel scrolling from changing the model selection."""
+        return "break"
+
     def _refresh_local_models(self):
         if self.provider_var.get() == "yolo":
             models = list_local_models("Model")
             self.model_combo["values"] = models
             if models:
                 self.model_combo.set(models[0])
+                self.model_combo.selection_clear()
 
     def _update_model_options(self):
         choice = self.provider_var.get()
@@ -1074,6 +1210,7 @@ class SetupScreen(tk.Frame):
             self.model_combo["values"] = opts
             curr = cfg.get("vision_model", "")
             self.model_combo.set(curr if curr in opts else (opts[0] if opts else ""))
+        self.model_combo.selection_clear()
         self._update_summary()
 
     def _update_summary(self):
@@ -1614,9 +1751,17 @@ class Dashboard(tk.Frame):
         make_label(strip, text="LOG", font=FONT_MONO, fg_key="SUBTEXT",
                    bg_key="PANEL").pack(side="left", padx=(20, 8))
         self.log_var = tk.StringVar(value="System starting…")
-        make_label(strip, textvariable=self.log_var, font=FONT_MONO,
-                   fg_key="TEXT", bg_key="PANEL",
-                   wraplength=820, justify="left").pack(side="left")
+        self._log_lbl = make_label(strip, textvariable=self.log_var, font=FONT_MONO,
+                                   fg_key="TEXT", bg_key="PANEL", justify="left")
+        self._log_lbl.pack(side="left")
+        strip.bind("<Configure>", self._on_log_configure)
+
+    def _on_log_configure(self, event):
+        try:
+            self._log_lbl.configure(
+                wraplength=max(200, event.width - scale_px(120)))
+        except Exception:
+            pass
 
     def _build_left_rail(self, parent):
         # SIGNAL block
