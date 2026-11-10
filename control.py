@@ -1,6 +1,21 @@
+import csv
 import json
+import os
 import threading
+from datetime import datetime
 from pathlib import Path
+
+DECISION_LOG_PATH = Path(__file__).resolve().parent / "decisions.csv"
+MAX_LOG_BYTES = 1_000_000  # 1 MB cap before rotating to decisions.csv.1
+LOG_HEADERS = [
+    "timestamp",
+    "lanes",
+    "winner_lane",
+    "tier",
+    "densities",
+    "emergencies",
+    "wait_counts",
+]
 
 # Module-level state tracking
 _wait_counts = {}
@@ -25,6 +40,48 @@ def _load_priorities():
         return default_prio
 
 
+def _load_starvation_threshold(lanes):
+    """Read starvation_threshold from config.json with fallback to lanes."""
+    cfg_path = Path(__file__).resolve().parent / "config.json"
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return lanes
+    val = cfg.get("starvation_threshold")
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return lanes
+    if val < 1:
+        return lanes
+    return int(val)
+
+
+def _log_decision(lanes, winner, tier, densities, etypes, waits_before):
+    """Append one decision row to the rolling CSV log; never raise."""
+    if DECISION_LOG_PATH is None:
+        return
+    try:
+        if DECISION_LOG_PATH.exists() and DECISION_LOG_PATH.stat().st_size >= MAX_LOG_BYTES:
+            os.replace(DECISION_LOG_PATH, f"{DECISION_LOG_PATH}.1")
+
+        needs_header = not DECISION_LOG_PATH.exists() or DECISION_LOG_PATH.stat().st_size == 0
+        with open(DECISION_LOG_PATH, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if needs_header:
+                writer.writerow(LOG_HEADERS)
+            writer.writerow([
+                datetime.now().isoformat(timespec="seconds"),
+                lanes,
+                winner,
+                tier,
+                "|".join(f"{i}:{densities[i]}" for i in range(lanes)),
+                "|".join(f"{i}:{etypes[i]}" for i in range(lanes)),
+                "|".join(f"{i}:{waits_before.get(i, 0)}" for i in range(lanes)),
+            ])
+    except Exception:
+        pass
+
+
 def reset_control():
     """Reset internal wait-count and last-lane state."""
     global _wait_counts, _last_lane
@@ -37,7 +94,7 @@ def controlfun(data, lanes):
     """
     Select active green lane using 3-tier priority controller:
     - Tier 1: Emergency Override (highest lane_prio, density, wait_count)
-    - Tier 2: Anti-Starvation Queue (cooldown & wait_counts >= lanes with traffic)
+    - Tier 2: Anti-Starvation Queue (cooldown & wait_counts >= threshold with traffic)
     - Tier 3: Weighted Density Score (density + wait*3, or fair rotation on zero traffic)
     """
     global _wait_counts, _last_lane
@@ -56,6 +113,7 @@ def controlfun(data, lanes):
         # Extract normalized lane attributes
         densities = {}
         lane_prios = {}
+        etypes = {}
 
         for i in range(lanes):
             lane_info = None
@@ -76,16 +134,22 @@ def controlfun(data, lanes):
             etype = str(lane_info.get("emergency_type", "")).strip().lower()
             if etype in priorities and etype != "none":
                 lane_prios[i] = priorities[etype]
+                etypes[i] = etype
             elif lane_info.get("ambulance"):
                 lane_prios[i] = priorities.get("ambulance", 2)
+                etypes[i] = "ambulance"
             elif lane_info.get("emergency"):
                 lane_prios[i] = priorities.get("ambulance", 2)
+                etypes[i] = "ambulance"
             elif etype == "none":
                 lane_prios[i] = priorities.get("none", 0)
+                etypes[i] = "none"
             else:
                 lane_prios[i] = 0
+                etypes[i] = "none"
 
         winner = None
+        tier = None
 
         # Tier 1 (Emergency Override): Lanes with priority > 0
         emergency_lanes = [i for i in range(lanes) if lane_prios[i] > 0]
@@ -96,6 +160,7 @@ def controlfun(data, lanes):
                 emergency_lanes,
                 key=lambda i: (lane_prios[i], densities[i], _wait_counts.get(i, 0), -i)
             )
+            tier = "emergency"
 
         # Tier 2 & Tier 3: When no emergency
         if winner is None:
@@ -109,10 +174,11 @@ def controlfun(data, lanes):
                 candidate_lanes = list(range(lanes))
 
             # Tier 2 (Anti-Starvation Queue):
-            # Starving lanes with _wait_counts[i] >= lanes and density > 0
+            # Starving lanes with _wait_counts[i] >= threshold and density > 0
+            threshold = _load_starvation_threshold(lanes)
             starving_lanes = [
                 i for i in candidate_lanes
-                if _wait_counts.get(i, 0) >= lanes and densities[i] > 0
+                if _wait_counts.get(i, 0) >= threshold and densities[i] > 0
             ]
             if starving_lanes:
                 # Winner selected by highest (_wait_counts[i], density)
@@ -121,6 +187,7 @@ def controlfun(data, lanes):
                     starving_lanes,
                     key=lambda i: (_wait_counts.get(i, 0), densities[i], -i)
                 )
+                tier = "starvation"
 
         # Tier 3 (Weighted Density Score)
         if winner is None:
@@ -131,6 +198,7 @@ def controlfun(data, lanes):
                     winner = (_last_lane + 1) % lanes
                 else:
                     winner = 0
+                tier = "rotation"
             else:
                 # Winner selected by highest (density + (_wait_counts[i] * 3), _wait_counts[i])
                 # Tie-breaker: lowest lane index (-i)
@@ -142,15 +210,19 @@ def controlfun(data, lanes):
                         -i
                     )
                 )
+                tier = "density"
 
         # Counter updates:
         # Reset winner wait count to 0, record _last_lane = winner,
         # and increment _wait_counts[i] += 1 for all other lanes with density > 0
+        waits_before = {i: _wait_counts.get(i, 0) for i in range(lanes)}
         _wait_counts[winner] = 0
         _last_lane = winner
         for i in range(lanes):
             if i != winner and densities[i] > 0:
                 _wait_counts[i] = _wait_counts.get(i, 0) + 1
+
+        _log_decision(lanes, winner, tier, densities, etypes, waits_before)
 
         return {
             "lane_no": winner,

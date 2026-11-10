@@ -87,3 +87,15 @@ def test_config_vision_models():
     active_model = cfg.get("vision_model")
     assert active_model in v_models[active_provider]
 
+
+@pytest.mark.unit
+def test_config_starvation_threshold():
+    """Verify starvation_threshold is a positive integer (and not a bool)."""
+    with open("config.json", "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    threshold = cfg.get("starvation_threshold")
+    assert isinstance(threshold, int)
+    assert not isinstance(threshold, bool)
+    assert threshold >= 1
+

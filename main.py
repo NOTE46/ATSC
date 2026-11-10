@@ -82,14 +82,15 @@ def main():
         return
 
     camera = {}
-    for i in range(lanes):
-        if ty == 0:
-            camera[i] = Cameraf(i, i)
-        else:
-            path = clean_path(input("Enter video path:"))
-            camera[i] = Cameraf(i, path)
 
     try:
+        for i in range(lanes):
+            if ty == 0:
+                camera[i] = Cameraf(i, i)
+            else:
+                path = clean_path(input("Enter video path:"))
+                camera[i] = Cameraf(i, path)
+
         reset_control()
         lane_data, frames = scan_all_lanes(camera, live=False)
         results = controlfun(lane_data, lanes)
@@ -97,8 +98,7 @@ def main():
         print(f"\n[BOOT SCAN COMPLETE] Initial Active Lane: {active_lane + 1} (GREEN for {green_time}s)")
 
         while True:
-            next_decision = [None]
-            scan_data = [None]
+            next_decision = {}
             scan_thread = None
 
             for remaining in range(green_time, 0, -1):
@@ -108,16 +108,24 @@ def main():
                 elif remaining == yellow_time:
                     print(f"[Lane {active_lane + 1} YELLOW] Switching in {remaining}s — scanning traffic...")
 
-                    def _cli_scan():
+                    def _cli_scan(decision, active, prev_data):
                         try:
-                            data, _ = scan_all_lanes(camera, live=False)
-                            scan_data[0] = data
-                            next_decision[0] = controlfun(data, lanes)
+                            new_data, _ = scan_all_lanes(camera, live=False)
+                            decision["result"] = controlfun(new_data, lanes)
+                            decision["data"] = new_data
                         except Exception as e:
-                            print(f"Scan error: {e}")
-                            next_decision[0] = {"lane_no": (active_lane + 1) % lanes, "signal": "Green"}
+                            print(f"  [WARN] Scan error: {e} — rotating lane")
+                            decision["result"] = {
+                                "lane_no": (active + 1) % lanes,
+                                "signal": "Green",
+                            }
+                            decision["data"] = prev_data
 
-                    scan_thread = threading.Thread(target=_cli_scan, daemon=True)
+                    scan_thread = threading.Thread(
+                        target=_cli_scan,
+                        args=(next_decision, active_lane, lane_data),
+                        daemon=True,
+                    )
                     scan_thread.start()
                     time.sleep(1)
                 else:
@@ -129,14 +137,16 @@ def main():
                 scan_thread.join(timeout=2)
 
             prev_lane = active_lane
-            if next_decision[0] is not None and "lane_no" in next_decision[0]:
-                active_lane = next_decision[0]["lane_no"]
+            result = next_decision.get("result")
+            if result is not None and "lane_no" in result:
+                active_lane = result["lane_no"]
             else:
                 active_lane = (prev_lane + 1) % lanes
 
             # Print cycle summary
-            active_density = scan_data[0][active_lane].get("density", 0) if (scan_data[0] and active_lane in scan_data[0]) else "N/A"
-            active_emerg = scan_data[0][active_lane].get("emergency_type", "none") if (scan_data[0] and active_lane in scan_data[0]) else "none"
+            cycle_data = next_decision.get("data")
+            active_density = cycle_data[active_lane].get("density", 0) if (cycle_data and active_lane in cycle_data) else "N/A"
+            active_emerg = cycle_data[active_lane].get("emergency_type", "none") if (cycle_data and active_lane in cycle_data) else "none"
             print(f"\n{'='*55}")
             print(f"CYCLE SUMMARY: Lane {prev_lane + 1} -> Lane {active_lane + 1} GREEN")
             print(f"Winner Density: {active_density} | Emergency: {str(active_emerg).upper()}")

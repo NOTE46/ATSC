@@ -1,3 +1,6 @@
+import importlib
+import sys
+import types
 from unittest.mock import MagicMock, patch
 import pytest
 import main
@@ -60,3 +63,234 @@ def test_main_cli_cycle_execution():
 
     assert mock_reset.called
     assert mock_cam.releasevid.called
+
+
+@pytest.mark.unit
+def test_main_scan_error_during_yellow_rotates_lane(make_lane_data, capsys):
+    """A worker scan RuntimeError prints the resilient warning and rotates to the next lane."""
+    boot_lane_data = make_lane_data([5, 2])
+    scan_mock = MagicMock(side_effect=[(boot_lane_data, {}), RuntimeError("boom")])
+
+    inputs = ["1", "2", "3", "v1.mp4", "v2.mp4"]
+    with patch("builtins.input", side_effect=inputs):
+        with patch("main.Cameraf", side_effect=[MagicMock(), MagicMock()]):
+            with patch("main.reset_control"):
+                with patch("main.scan_all_lanes", scan_mock):
+                    with patch("main.controlfun", return_value={"lane_no": 0, "signal": "Green"}):
+                        with patch("main.load_config", return_value={
+                            "green_options": [3], "default_green": 3, "yellow_time": 1
+                        }):
+                            # 3 countdown sleeps in cycle 1, then stop the loop in cycle 2
+                            with patch("time.sleep", side_effect=[None, None, None, KeyboardInterrupt]):
+                                main.main()
+
+    captured = capsys.readouterr()
+    assert scan_mock.call_count == 2
+    assert captured.out.count("[WARN] Scan error: boom") == 1
+    assert "Lane 1 -> Lane 2 GREEN" in captured.out
+
+
+@pytest.mark.unit
+def test_main_camera_init_failure_releases_opened_cameras():
+    """If a later camera fails to open, already-opened cameras are released in finally."""
+    first_cam = MagicMock()
+    cameraf_mock = MagicMock(side_effect=[first_cam, RuntimeError("camera fail")])
+
+    inputs = ["1", "2", "30", "v1.mp4", "v2.mp4"]
+    with patch("builtins.input", side_effect=inputs):
+        with patch("main.Cameraf", cameraf_mock):
+            with patch("main.load_config", return_value={
+                "green_options": [30], "default_green": 30, "yellow_time": 5
+            }):
+                main.main()
+
+    assert cameraf_mock.call_count == 2
+    assert first_cam.releasevid.called
+
+
+@pytest.mark.unit
+def test_load_config_missing_and_invalid(tmp_path, monkeypatch):
+    """load_config returns {} for a missing file or invalid JSON."""
+    monkeypatch.chdir(tmp_path)
+    assert main.load_config() == {}
+
+    (tmp_path / "config.json").write_text("{not valid json", encoding="utf-8")
+    assert main.load_config() == {}
+
+
+@pytest.mark.unit
+def test_clean_path_strips_whitespace_and_quotes():
+    """clean_path removes surrounding whitespace and single/double quotes."""
+    assert main.clean_path("  video.mp4  ") == "video.mp4"
+    assert main.clean_path('  "video.mp4"  ') == "video.mp4"
+    assert main.clean_path("  'video.mp4'  ") == "video.mp4"
+
+
+@pytest.mark.unit
+def test_main_mode0_full_countdown_and_emergency_summary(capsys):
+    """Mode 0 opens live cameras, completes a full cycle, and switches to the scan winner."""
+    boot_data = {
+        0: {"density": 5, "emergency_type": "none"},
+        1: {"density": 2, "emergency_type": "none"},
+    }
+    scan_data = {
+        0: {"density": 1, "emergency_type": "none"},
+        1: {"density": 9, "emergency_type": "ambulance"},
+    }
+    cam0, cam1 = MagicMock(), MagicMock()
+    scan_mock = MagicMock(side_effect=[(boot_data, {}), (scan_data, {})])
+    control_mock = MagicMock(side_effect=[
+        {"lane_no": 0, "signal": "Green"},
+        {"lane_no": 1, "signal": "Green"},
+    ])
+
+    with patch("builtins.input", side_effect=["0", "2", "3"]):
+        with patch("main.Cameraf", side_effect=[cam0, cam1]) as cameraf_mock:
+            with patch("main.reset_control"):
+                with patch("main.scan_all_lanes", scan_mock):
+                    with patch("main.controlfun", control_mock):
+                        with patch("main.load_config", return_value={
+                            "green_options": [3], "default_green": 3, "yellow_time": 2
+                        }):
+                            with patch("time.sleep", side_effect=[None, None, None, KeyboardInterrupt]):
+                                main.main()
+
+    captured = capsys.readouterr().out
+    assert cameraf_mock.call_args_list[0].args == (0, 0)
+    assert cameraf_mock.call_args_list[1].args == (1, 1)
+    assert scan_mock.call_count == 2
+    assert control_mock.call_count == 2
+    assert "[Lane 1 YELLOW] Switching in 2s" in captured
+    assert "[Lane 1 YELLOW] Switching in 1s" in captured
+    assert "CYCLE SUMMARY: Lane 1 -> Lane 2 GREEN" in captured
+    assert "Winner Density: 9 | Emergency: AMBULANCE" in captured
+    assert "Stopped" in captured
+    assert cam0.releasevid.called
+    assert cam1.releasevid.called
+
+
+@pytest.mark.unit
+def test_main_non_numeric_input_terminates(capsys):
+    """A non-numeric mode/lane input prints the validation message and never opens cameras."""
+    with patch("builtins.input", return_value="not-a-number"):
+        with patch("main.Cameraf") as cameraf_mock:
+            main.main()
+
+    assert "Please enter a valid number!" in capsys.readouterr().out
+    assert not cameraf_mock.called
+
+
+@pytest.mark.unit
+def test_main_scan_timeout_rotates_without_result(capsys, make_lane_data):
+    """A worker that never publishes a result falls back to rotating the active lane."""
+    lane_data = make_lane_data([5, 2])
+    fake_thread = MagicMock()
+
+    with patch("builtins.input", side_effect=["0", "2", "2"]):
+        with patch("main.Cameraf", return_value=MagicMock()):
+            with patch("main.reset_control"):
+                with patch("main.scan_all_lanes", return_value=(lane_data, {})):
+                    with patch("main.controlfun", return_value={"lane_no": 0, "signal": "Green"}):
+                        with patch("main.load_config", return_value={
+                            "green_options": [2], "default_green": 2, "yellow_time": 1
+                        }):
+                            with patch("main.threading.Thread", return_value=fake_thread):
+                                with patch("time.sleep", side_effect=[None, None, KeyboardInterrupt]):
+                                    main.main()
+
+    captured = capsys.readouterr().out
+    assert fake_thread.start.called
+    assert fake_thread.join.called
+    assert "CYCLE SUMMARY: Lane 1 -> Lane 2 GREEN" in captured
+    assert "Winner Density: N/A | Emergency: NONE" in captured
+
+
+@pytest.mark.unit
+def test_cli_scan_late_thread_uses_its_own_cycle_state():
+    """A slow cycle-1 scan writes to cycle 1's decision dict, not cycle 2's."""
+    class FakeThread:
+        created = []
+
+        def __init__(self, target=None, args=(), daemon=None, **kw):
+            self.target, self.args = target, args
+            FakeThread.created.append(self)
+            if len(FakeThread.created) == 3:
+                raise KeyboardInterrupt  # stop at the start of cycle 3
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    FakeThread.created = []
+    lanes = 2
+    lane_data = {0: {"density": 5, "emergency_type": "none"}, 1: {"density": 2, "emergency_type": "none"}}
+
+    with patch("builtins.input", side_effect=["0", str(lanes), "3"]):
+        with patch("main.Cameraf", return_value=MagicMock()):
+            with patch("main.reset_control"):
+                with patch("main.scan_all_lanes", return_value=(lane_data, {})):
+                    with patch("main.controlfun", return_value={"lane_no": 0, "signal": "Green"}):
+                        with patch("main.load_config", return_value={
+                            "green_options": [3], "default_green": 3, "yellow_time": 2
+                        }):
+                            with patch.object(main.threading, "Thread", FakeThread):
+                                with patch("time.sleep"):
+                                    main.main()
+
+    t1, t2 = FakeThread.created[0], FakeThread.created[1]
+    with patch("main.scan_all_lanes", side_effect=RuntimeError("boom")):
+        t1.target(*t1.args)
+
+    assert t1.args[0] is not t2.args[0]
+    assert t1.args[0]["result"]["lane_no"] == (t1.args[1] + 1) % lanes
+    assert t2.args[0].get("result") is None
+
+
+@pytest.mark.unit
+def test_main_quoted_video_path_and_release_error_is_swallowed(capsys):
+    """Mode 1 cleans quoted paths; teardown suppresses releasevid errors."""
+    cam = MagicMock()
+    cam.releasevid.side_effect = RuntimeError("release fail")
+
+    with patch("builtins.input", side_effect=["1", "1", "30", '  "clip.mp4"  ']):
+        with patch("main.Cameraf", return_value=cam) as cameraf_mock:
+            with patch("main.reset_control"):
+                with patch("main.scan_all_lanes", side_effect=RuntimeError("scan fail")):
+                    with patch("main.load_config", return_value={
+                        "green_options": [30], "default_green": 30, "yellow_time": 5
+                    }):
+                        main.main()
+
+    assert "Error : scan fail" in capsys.readouterr().out
+    cameraf_mock.assert_called_once_with(0, "clip.mp4")
+    assert cam.releasevid.called
+
+
+@pytest.mark.unit
+def test_import_fallbacks_define_compat_helpers():
+    """Missing optional exports fall back to local compatibility definitions."""
+    fake_control = types.ModuleType("control")
+    fake_control.controlfun = lambda data, lanes: {"lane_no": 0, "signal": "Green"}
+    fake_cvfile = types.ModuleType("cvfile")
+    fake_cvfile.Cameraf = MagicMock()
+
+    original_control = sys.modules.get("control")
+    original_cvfile = sys.modules.get("cvfile")
+    sys.modules["control"] = fake_control
+    sys.modules["cvfile"] = fake_cvfile
+    try:
+        reloaded = importlib.reload(main)
+        assert reloaded.reset_control() is None
+        assert reloaded.scan_all_lanes(None) == ({}, {})
+    finally:
+        if original_control is not None:
+            sys.modules["control"] = original_control
+        else:
+            sys.modules.pop("control", None)
+        if original_cvfile is not None:
+            sys.modules["cvfile"] = original_cvfile
+        else:
+            sys.modules.pop("cvfile", None)
+        importlib.reload(main)

@@ -1,5 +1,11 @@
 {
-  "green_options": [15, 30, 40, 50, 60],
+  "green_options": [
+    15,
+    30,
+    40,
+    50,
+    60
+  ],
   "default_green": 30,
   "yellow_time": 5,
   "frame_skip": 5,
@@ -33,5 +39,6 @@
     "firetruck": 1,
     "none": 0
   },
+  "starvation_threshold": 3,
   "roi_points": {}
 }

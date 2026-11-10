@@ -51,8 +51,9 @@ import ambdet
 
 
 @pytest.fixture(autouse=True)
-def reset_controller_state():
-    """Reset controller state before and after every test."""
+def reset_controller_state(monkeypatch, tmp_path):
+    """Reset controller state and isolate the decision log before and after every test."""
+    monkeypatch.setattr(control, "DECISION_LOG_PATH", tmp_path / "decisions.csv")
     control.reset_control()
     yield
     control.reset_control()

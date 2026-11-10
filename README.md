@@ -4,7 +4,7 @@
 ![lint](https://github.com/NOTE46/ATSC/actions/workflows/lint.yml/badge.svg)
 ![python](https://img.shields.io/badge/python-3.13-blue)
 
-ATSC decides which lane of an intersection gets the green light. It counts vehicles in each lane with YOLOv8, checks for ambulances and fire trucks with a vision AI (or a local model), and picks the next lane with a fair priority queue, so emergency vehicles go first and no lane waits forever.
+ATSC decides which lane of an intersection gets the green light. It counts vehicles in each lane with YOLO26n, checks for ambulances and fire trucks with a vision AI (or a local model), and picks the next lane with a fair priority queue, so emergency vehicles go first and no lane waits forever.
 
 ## Features
 
@@ -32,7 +32,7 @@ cvfile.py        read frames, apply the 4-point ROI mask and crop
         +--------------------------------+
         v                                v
 uafile.py                          ambdet.py
-YOLOv8n vehicle count              stitch 2 lanes per image ->
+YOLO26n vehicle count                stitch 2 lanes per image ->
 (car, motorcycle, truck, bus)      Gemini / Groq / OpenRouter
                                    or local .pt model
         |                                |
@@ -58,6 +58,8 @@ GREEN (AI idle)   YELLOW   next lane turns GREEN
 
 At startup there is one boot scan to choose the first green lane.
 
+**Decision log.** `control.py` appends one CSV row per controller decision (`timestamp`, `lanes`, `winner_lane`, `tier`, `densities`, `emergencies`, `wait_counts`) to `decisions.csv` next to `control.py`. The file is gitignored, capped at 1 MB, and then rotated to `decisions.csv.1` (one backup only; the older backup is overwritten). Rows record what the controller decided, and boot and manual-mode decisions are logged too.
+
 **Shared data contract**
 
 ```python
@@ -78,7 +80,7 @@ ATSC/
 ├── gui.py              Tkinter dashboard, ROI editor, setup screen
 ├── main.py             terminal version
 ├── cvfile.py           camera wrapper, ROI mask/crop, scan_all_lanes()
-├── uafile.py           YOLOv8n vehicle counter
+├── uafile.py           YOLO26n vehicle counter
 ├── ambdet.py           emergency detection (Gemini/Groq/OpenRouter/local), .env loader
 ├── control.py          3-tier priority and anti-starvation controller
 ├── manual_io.py        manual input mode (terminal)
@@ -86,7 +88,7 @@ ATSC/
 ├── .env.example        template for API keys
 ├── requirements.txt    runtime dependencies
 ├── requirements-dev.txt  pytest and coverage
-├── Model/              yolov8n.pt (vehicle counting) + emergency .pt models
+├── Model/              yolo26n.pt (vehicle counting) + emergency .pt models
 ├── tests/              pytest suite (headless, everything mocked)
 └── .github/workflows/  CI: tests and lint
 ```
@@ -103,9 +105,21 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+**Windows CUDA (optional).** The default PyPI wheel is CPU-only on Windows. A GPU is optional and only speeds up local YOLO inference (vehicle counting and the local emergency model). After installing `requirements.txt`, Windows users with an NVIDIA GPU can install the CUDA build (`cu128`; use `cu126` or `cu130` for other CUDA versions):
+
+```bash
+pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
+```
+
+Verify with:
+
+```bash
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
 **Model weights.** Put these in `Model/`:
 
-- `yolov8n.pt` for vehicle counting
+- `yolo26n.pt` for vehicle counting
 - `best.pt`, or any custom `.pt` model, for local emergency detection
 
 **API keys (optional).** Copy the template and fill in only the providers you use:
@@ -162,6 +176,7 @@ Edit `config.json`:
 | `vision_models` | model names offered per provider in the GUI |
 | `ambulance_model` | local emergency model |
 | `vision_stitch_limit` | lanes stitched per cloud request (default 2) |
+| `starvation_threshold` | consecutive decisions a lane with traffic can be skipped before Tier 2 anti-starvation picks it (default 3; missing, null, or below 1 falls back to the number of lanes) |
 | `emergency_priority` | priority weights (ambulance 2, firetruck 1) |
 | `roi_points` | saved polygons (written by the GUI) |
 
