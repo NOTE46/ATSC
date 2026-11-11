@@ -576,6 +576,38 @@ def test_sb_needed_on_past_margin():
 
 
 @pytest.mark.unit
+def test_tile_box_fits_16_9_above_caption():
+    """A wide cell is limited by height above the caption; tiny cells are skipped."""
+    assert gui.tile_box(500, 300, 40) == (462, 260)
+    assert gui.tile_box(400, 300, 40) == (400, 225)
+    assert gui.tile_box(10, 300, 40) is None
+    assert gui.tile_box(500, 50, 40) is None
+
+
+@pytest.mark.unit
+def test_fit_text_truncates_with_ellipsis():
+    """fit_text keeps text that fits and shortens the rest to the pixel budget."""
+    assert gui.fit_text("abcdefghij", 10, len) == "abcdefghij"
+    assert gui.fit_text("abcdefghij", 6, len) == "abcde…"
+    assert gui.fit_text("abc", 0, len) == "…"
+    assert gui.fit_text("", 5, len) == ""
+
+
+@pytest.mark.unit
+def test_schedule_layout_coalesces_pending_callback():
+    """Two requests before idle schedule only one layout pass."""
+    screen = object.__new__(gui.SetupScreen)
+    screen._layout_pending = False
+    screen.after_idle = MagicMock()
+
+    screen._schedule_layout()
+    screen._schedule_layout()
+    assert screen.after_idle.call_count == 1
+    screen.after_idle.call_args.args[0]()
+    assert screen._layout_pending is False
+
+
+@pytest.mark.unit
 def test_resize_tiles_does_not_mutate_canvas_geometry():
     """The grid sizes tiles; _resize_tiles stays a compatibility no-op."""
     class _FakeTile:
@@ -590,7 +622,6 @@ def test_resize_tiles_does_not_mutate_canvas_geometry():
     screen.preview_holder.winfo_width.return_value = 1000
     tiles = [_FakeTile(), _FakeTile()]
     screen._preview_canvases = tiles
-    screen._tile_size = None
 
     screen._resize_tiles()
     screen._resize_tiles()

@@ -6,7 +6,7 @@ from pathlib import Path
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 import cv2
 from PIL import Image, ImageTk
 
@@ -222,6 +222,7 @@ DEFAULT_YELLOW = CONFIG.get("yellow_time", 5)
 TIME_INTERVAL = 2
 
 _UI_SCALE = 1.0
+CAPTION_H = 44  # logical px; caption row under each lane tile (all input modes)
 
 
 def scale_px(val):
@@ -254,6 +255,33 @@ def sb_needed(visible, req_h, canvas_h, margin=12):
     if visible:
         return req_h > canvas_h - margin
     return req_h > canvas_h + margin
+
+
+def tile_box(cell_w, cell_h, caption_h):
+    """Largest 16:9 (w, h) that fits above a caption row inside a cell, or None if too small."""
+    avail_w = int(cell_w)
+    avail_h = int(cell_h) - int(caption_h)
+    if avail_w <= 10 or avail_h <= 10:
+        return None
+    if avail_w / avail_h > 16 / 9:
+        h = avail_h
+        w = round(h * 16 / 9)
+    else:
+        w = avail_w
+        h = round(w * 9 / 16)
+    return int(w), int(h)
+
+
+def fit_text(text, max_px, measure):
+    """Shorten text with a trailing ellipsis so measure(text) <= max_px."""
+    if measure(text) <= max_px:
+        return text
+    ell = "…"
+    for n in range(len(text) - 1, 0, -1):
+        cand = text[:n].rstrip() + ell
+        if measure(cand) <= max_px:
+            return cand
+    return ell
 
 
 # Initialise theme from config
@@ -760,9 +788,13 @@ class SetupScreen(tk.Frame):
         Theme.bind(self, "bg", "BG")
         self.on_start = on_start
         self.on_settings = on_settings
-        self.video_paths = []
         self._path_entries = []
         self._preview_canvases = []
+        self._preview_cells = []
+        self._preview_inners = []
+        self._captions = []
+        self._caption_mode = None
+        self._layout_pending = False
         self._clock_job = None
         self._build()
         self._rebuild_previews()
@@ -795,7 +827,27 @@ class SetupScreen(tk.Frame):
                            font=FONT_MONO, fg_key="SUBTEXT", bg_key="PANEL")
         clock.pack(side="right", padx=12)
 
-        # ── scrollable body split ─────────────────────────────────
+        # ── bottom log strip (packed first: sits lowest) ──────────
+        strip = tk.Frame(self, height=40)
+        Theme.bind(strip, "bg", "PANEL")
+        strip.pack(fill="x", side="bottom")
+        strip.pack_propagate(False)
+        make_label(strip, text="LOG", font=FONT_MONO, fg_key="SUBTEXT",
+                   bg_key="PANEL").pack(side="left", padx=(20, 8))
+        self.log_var = tk.StringVar(value="Waiting for configuration…")
+        make_label(strip, textvariable=self.log_var, font=FONT_MONO,
+                   fg_key="TEXT", bg_key="PANEL").pack(side="left")
+
+        # ── sticky footer directly above the log strip ────────────
+        sep = tk.Frame(self, height=1)
+        Theme.bind(sep, "bg", "BORDER")
+        sep.pack(fill="x", side="bottom")
+        footer = tk.Frame(self)
+        Theme.bind(footer, "bg", "PANEL")
+        footer.pack(fill="x", side="bottom")
+        self._build_footer(footer)
+
+        # ── scrollable body split (packed last: fills remaining) ──
         scroll_wrap = tk.Frame(self)
         Theme.bind(scroll_wrap, "bg", "BG")
         scroll_wrap.pack(fill="both", expand=True)
@@ -816,8 +868,7 @@ class SetupScreen(tk.Frame):
         self._last_body_box = None
         self.body_frame.bind("<Configure>", self._layout_body)
         self.canvas.bind("<Configure>", self._layout_body)
-        self.canvas.bind("<Enter>", self._bind_wheel)
-        self.canvas.bind("<Leave>", self._unbind_wheel)
+        self._bind_wheel()
 
         self.col_left = tk.Frame(self.body_frame, width=scale_px(290))
         Theme.bind(self.col_left, "bg", "BG")
@@ -835,17 +886,6 @@ class SetupScreen(tk.Frame):
 
         self._build_left(self.col_left)
         self._build_right(self.col_right)
-
-        # ── bottom log strip ──────────────────────────────────────
-        strip = tk.Frame(self, height=40)
-        Theme.bind(strip, "bg", "PANEL")
-        strip.pack(fill="x", side="bottom")
-        strip.pack_propagate(False)
-        make_label(strip, text="LOG", font=FONT_MONO, fg_key="SUBTEXT",
-                   bg_key="PANEL").pack(side="left", padx=(20, 8))
-        self.log_var = tk.StringVar(value="Waiting for configuration…")
-        make_label(strip, textvariable=self.log_var, font=FONT_MONO,
-                   fg_key="TEXT", bg_key="PANEL").pack(side="left")
         self._update_summary()
 
     def _layout_body(self, _e=None):
@@ -870,8 +910,23 @@ class SetupScreen(tk.Frame):
                                      before=self.canvas)
             else:
                 self._scrollbar.pack_forget()
+                self.canvas.yview_moveto(0)
         except Exception:
             pass
+
+    def _schedule_layout(self):
+        """Coalesce layout requests from callbacks that change requested height."""
+        if getattr(self, "_layout_pending", False):
+            return
+        self._layout_pending = True
+        try:
+            self.after_idle(self._run_layout)
+        except tk.TclError:
+            self._layout_pending = False
+
+    def _run_layout(self):
+        self._layout_pending = False
+        self._layout_body()
 
     def _bind_wheel(self, _e=None):
         try:
@@ -887,6 +942,9 @@ class SetupScreen(tk.Frame):
 
     def _on_mousewheel(self, event):
         try:
+            widget = getattr(event, "widget", None)
+            if isinstance(widget, (ttk.Combobox, tk.Listbox)):
+                return
             if self.body_frame.winfo_reqheight() <= self.canvas.winfo_height():
                 return
             self.canvas.yview_scroll(int(-event.delta / 120), "units")
@@ -958,7 +1016,7 @@ class SetupScreen(tk.Frame):
 
     # ── right pane ─────────────────────────────────────────────────
     def _build_right(self, parent):
-        # LANES card (packed last so it claims the remaining space)
+        # LANES card: the only visible card in the right column.
         prev_outer = tk.Frame(parent, highlightthickness=1, bd=0)
         Theme.bind(prev_outer, "bg", "PANEL")
         Theme.bind(prev_outer, "highlightbackground", "BORDER")
@@ -975,60 +1033,54 @@ class SetupScreen(tk.Frame):
         self.preview_holder.bind("<Configure>", self._fit_holder)
         Theme.on_change(self.preview_holder, self._refresh_preview_text)
 
-        # SOURCE FILES (mode-dependent)
-        self.path_card = tk.Frame(parent, highlightthickness=1, bd=0)
-        Theme.bind(self.path_card, "bg", "PANEL")
-        Theme.bind(self.path_card, "highlightbackground", "BORDER")
-        self._path_card_visible = False
-
-        path_hdr = make_label(self.path_card, text="SOURCE FILES",
-                              font=FONT_MONO, fg_key="SUBTEXT",
-                              bg_key="PANEL", anchor="w")
-        path_hdr.pack(fill="x", padx=14, pady=(10, 4))
-
-        self.path_frame = tk.Frame(self.path_card)
-        Theme.bind(self.path_frame, "bg", "PANEL")
-        self.path_frame.pack(fill="x", padx=14, pady=(0, 12))
-
-        # SUMMARY (2-column KPI grid)
-        sum_outer = tk.Frame(parent, highlightthickness=1, bd=0)
-        Theme.bind(sum_outer, "bg", "PANEL")
-        Theme.bind(sum_outer, "highlightbackground", "BORDER")
-
-        sum_hdr = make_label(sum_outer, text="SUMMARY", font=FONT_MONO,
-                             fg_key="SUBTEXT", bg_key="PANEL", anchor="w")
-        sum_hdr.pack(fill="x", padx=14, pady=(10, 4))
-
-        self.summary_body = tk.Frame(sum_outer)
-        Theme.bind(self.summary_body, "bg", "PANEL")
-        self.summary_body.pack(fill="x", padx=14, pady=(0, 12))
-
-        self._summary_vars = {}
-        for idx, key in enumerate(("Mode", "Lanes", "Green", "Detector", "Status")):
-            cell = tk.Frame(self.summary_body)
-            Theme.bind(cell, "bg", "PANEL")
-            cell.grid(row=idx // 2, column=idx % 2,
-                      sticky="nsew", padx=6, pady=4)
-            make_label(cell, text=key.upper(), font=FONT_MONO,
-                       fg_key="SUBTEXT", bg_key="PANEL", anchor="w"
-                       ).pack(fill="x")
-            var = tk.StringVar(value="—")
-            lbl = make_label(cell, textvariable=var, font=FONT_H,
-                             fg_key="TEXT", bg_key="PANEL", anchor="w")
-            lbl.pack(fill="x")
-            self._summary_vars[key] = (var, lbl)
-        for col in range(2):
-            self.summary_body.columnconfigure(col, weight=1)
-
-        # Compact top-down stack: LANES, SUMMARY, then START.
-        start_wrap = tk.Frame(parent)
-        Theme.bind(start_wrap, "bg", "BG")
-        self.start_btn = RoundedButton(start_wrap, text="START CONTROLLER  →",
-                                       command=self._start, radius=10, height=44)
-        self.start_btn.pack(fill="x")
         prev_outer.pack(fill="x", pady=(0, 10))
-        sum_outer.pack(fill="x", pady=(0, 10))
-        start_wrap.pack(fill="x")
+
+        # Compatibility stubs: video paths now live in the lane captions.
+        self.path_card = tk.Frame(parent)
+        self.path_frame = tk.Frame(self.path_card)
+
+    def _build_footer(self, parent):
+        self._summary_vars = {}
+        for key in ("Mode", "Lanes", "Green", "Detector", "Status"):
+            self._summary_vars[key] = (tk.StringVar(value="—"), None)
+
+        self.start_btn = RoundedButton(parent, text="START CONTROLLER  →",
+                                       command=self._start, radius=10,
+                                       height=scale_px(46),
+                                       width=scale_px(300))
+        self.start_btn.pack(side="right", padx=(12, 20), pady=10)
+
+        status_var = self._summary_vars["Status"][0]
+        status_lbl = make_label(parent, textvariable=status_var, font=FONT_H,
+                                fg_key="TEXT", bg_key="PANEL", anchor="w")
+        status_lbl.pack(side="left", padx=(20, 12))
+        self._summary_vars["Status"] = (status_var, status_lbl)
+
+        self._summary_info_full = ""
+        self._summary_info_font = None
+        self._summary_info_lbl = make_label(parent, text="", font=FONT_MONO,
+                                            fg_key="SUBTEXT", bg_key="PANEL",
+                                            anchor="w")
+        self._summary_info_lbl.pack(side="left", fill="x", expand=True)
+        self._summary_info_lbl.bind(
+            "<Configure>", lambda _e: self._apply_info_text())
+
+    def _apply_info_text(self):
+        try:
+            max_px = self._summary_info_lbl.winfo_width() - scale_px(8)
+            if max_px <= 10:
+                return
+            if self._summary_info_font is None:
+                try:
+                    self._summary_info_font = tkfont.Font(font=FONT_MONO)
+                except tk.TclError:
+                    self._summary_info_font = False
+            font = self._summary_info_font
+            measure = font.measure if font else (lambda s: len(s) * scale_px(7))
+            self._summary_info_lbl.configure(
+                text=fit_text(self._summary_info_full, max_px, measure))
+        except tk.TclError:
+            pass
 
     # ── preview logic ──────────────────────────────────────────────
     def _rebuild_previews(self):
@@ -1038,34 +1090,112 @@ class SetupScreen(tk.Frame):
             self._refresh_preview_text()
             return
         self._previews_key = key
-        self._tile_size = None
-        if len(self._preview_canvases) != n:
+        if len(self._preview_cells) != n:
+            old = [e.get() for e in self._path_entries]
             for w in self.preview_holder.winfo_children():
                 w.destroy()
             self._preview_canvases = []
+            self._preview_cells = []
+            self._preview_inners = []
+            self._captions = []
+            self._path_entries = []
+            self._caption_mode = None
             for i in range(n):
-                c = tk.Canvas(self.preview_holder, width=10, height=10, bd=0,
+                cell = tk.Frame(self.preview_holder)
+                Theme.bind(cell, "bg", "PANEL")
+
+                inner = tk.Frame(cell, width=10, height=10)
+                Theme.bind(inner, "bg", "PANEL")
+                inner.pack_propagate(False)
+                inner.pack(expand=True)
+
+                caption = tk.Frame(inner, height=scale_px(CAPTION_H))
+                Theme.bind(caption, "bg", "PANEL")
+                caption.pack_propagate(False)
+                caption.pack(side="bottom", fill="x")
+
+                c = tk.Canvas(inner, width=10, height=10, bd=0,
                               highlightthickness=0)
                 Theme.bind(c, "bg", "PANEL")
                 c.bind("<Configure>",
                        lambda e, i=i: self._draw_preview_tile(i, e.width, e.height))
+                c.pack(side="top", fill="both", expand=True)
+
+                live_lbl = make_label(caption, text=f"Live camera {i}",
+                                      font=FONT_MONO, fg_key="SUBTEXT",
+                                      bg_key="PANEL", anchor="w")
+                manual_lbl = make_label(caption,
+                                        text="Values are entered when you start",
+                                        font=FONT_MONO, fg_key="SUBTEXT",
+                                        bg_key="PANEL", anchor="w")
+                video_row = tk.Frame(caption)
+                Theme.bind(video_row, "bg", "PANEL")
+                e = make_entry(video_row, width=28)
+                e.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+                def browse(_e=e):
+                    path = filedialog.askopenfilename(
+                        filetypes=[("Video", "*.mp4 *.avi *.mov *.mkv"),
+                                   ("All", "*.*")])
+                    if path:
+                        _e.delete(0, tk.END)
+                        _e.insert(0, path)
+                        self._update_summary()
+                        self._refresh_preview_text()
+
+                btn = tk.Button(video_row, text="Browse", font=FONT_MONO,
+                                relief="flat", padx=8, cursor="hand2",
+                                command=browse)
+                Theme.bind(btn, "bg", "PANEL_ALT")
+                Theme.bind(btn, "fg", "ACCENT")
+                Theme.bind(btn, "activebackground", "PANEL")
+                Theme.bind(btn, "activeforeground", "ACCENT")
+                btn.pack(side="left")
+                e.bind("<KeyRelease>", self._on_path_edit)
+
+                if i < len(old):
+                    e.insert(0, old[i])
                 self._preview_canvases.append(c)
-        for c in self._preview_canvases:
-            c.grid_forget()
-        for i, c in enumerate(self._preview_canvases):
+                self._preview_cells.append(cell)
+                self._preview_inners.append(inner)
+                self._captions.append({"live": live_lbl, "manual": manual_lbl,
+                                       "video": video_row})
+                self._path_entries.append(e)
+
+        for cell in self._preview_cells:
+            cell.grid_forget()
+        for i, cell in enumerate(self._preview_cells):
             if n == 1:
-                c.grid(row=0, column=0, rowspan=2, columnspan=2,
-                       padx=6, pady=6, sticky="nsew")
+                cell.grid(row=0, column=0, rowspan=2, columnspan=2,
+                          padx=6, pady=6, sticky="nsew")
             elif n == 2:
-                c.grid(row=0, column=i, rowspan=2,
-                       padx=6, pady=6, sticky="nsew")
+                cell.grid(row=0, column=i, rowspan=2,
+                          padx=6, pady=6, sticky="nsew")
             else:
-                c.grid(row=i // 2, column=i % 2,
-                       padx=6, pady=6, sticky="nsew")
+                cell.grid(row=i // 2, column=i % 2,
+                          padx=6, pady=6, sticky="nsew")
         for col in range(2):
             self.preview_holder.columnconfigure(col, weight=1)
         for row in range(2):
             self.preview_holder.rowconfigure(row, weight=1)
+        self._show_caption_variant()
+        self._fit_holder()
+        self._refresh_preview_text()
+        self._schedule_layout()
+
+    def _show_caption_variant(self):
+        mode = self.mode_var.get()
+        if mode == getattr(self, "_caption_mode", None):
+            return
+        self._caption_mode = mode
+        key = {0: "live", 1: "video", 2: "manual"}.get(mode, "live")
+        for caps in self._captions:
+            for widget in caps.values():
+                widget.pack_forget()
+            caps[key].pack(fill="x", pady=scale_px(10))
+
+    def _on_path_edit(self, _e=None):
+        self._update_summary()
         self._refresh_preview_text()
 
     def _fit_holder(self, event=None):
@@ -1074,13 +1204,23 @@ class SetupScreen(tk.Frame):
             row_h = tile_row_h(holder_w, 6, scale_px(480))
             if row_h is None:
                 return
-            fit = (holder_w, row_h)
+            row_h += scale_px(CAPTION_H)
+            n = len(self._preview_cells)
+            fit = (holder_w, row_h, n)
             if fit == getattr(self, "_last_holder_fit", None):
                 return
             self._last_holder_fit = fit
             self.preview_holder.configure(height=2 * row_h)
             self.preview_holder.rowconfigure(0, minsize=row_h)
             self.preview_holder.rowconfigure(1, minsize=row_h)
+            cell_w = (holder_w - 12) if n == 1 else (holder_w / 2 - 12)
+            cell_h = (2 * row_h - 12) if n <= 2 else (row_h - 12)
+            box = tile_box(cell_w, cell_h, scale_px(CAPTION_H))
+            if box:
+                for inner in self._preview_inners:
+                    inner.configure(width=box[0],
+                                    height=box[1] + scale_px(CAPTION_H))
+            self._schedule_layout()
         except tk.TclError:
             pass
 
@@ -1156,65 +1296,18 @@ class SetupScreen(tk.Frame):
         self._update_summary()
 
     def _on_mode_change(self):
-        mode = self.mode_var.get()
         self._rebuild_previews()
-        want = mode == 1
-        if want != getattr(self, "_path_card_visible", False):
-            self._path_card_visible = want
-            if want:
-                self.path_card.pack(fill="x", pady=(0, 10),
-                                    before=self.summary_body.master)
-            else:
-                self.path_card.pack_forget()
-        if want:
-            self._rebuild_paths()
-        else:
-            self._path_entries = []
-            self._paths_key = None
         self._update_summary()
+        self._schedule_layout()
 
     def _on_lane_change(self):
         self._rebuild_previews()
-        if self.mode_var.get() == 1:
-            self._rebuild_paths()
         self._update_summary()
+        self._schedule_layout()
 
     def _rebuild_paths(self):
-        n = self.lane_var.get()
-        key = (self.mode_var.get(), n)
-        if key == getattr(self, "_paths_key", None):
-            return
-        self._paths_key = key
-        for w in self.path_frame.winfo_children():
-            w.destroy()
-        self.video_paths = [""] * n
-        self._path_entries = []
-        for i in range(n):
-            row = tk.Frame(self.path_frame)
-            Theme.bind(row, "bg", "PANEL")
-            row.pack(fill="x", pady=3)
-            make_label(row, text=f"L{i+1}", font=FONT_MONO, fg_key="SUBTEXT",
-                       bg_key="PANEL", width=4, anchor="w").pack(side="left")
-            e = make_entry(row, width=28)
-            e.pack(side="left", fill="x", expand=True, padx=(0, 6))
-            self._path_entries.append(e)
-
-            def browse(_e=e):
-                path = filedialog.askopenfilename(
-                    filetypes=[("Video", "*.mp4 *.avi *.mov *.mkv"),
-                               ("All", "*.*")])
-                if path:
-                    _e.delete(0, tk.END)
-                    _e.insert(0, path)
-                    self._update_summary()
-                    self._refresh_preview_text()
-
-            btn = tk.Button(row, text="Browse", font=FONT_MONO, relief="flat",
-                            padx=8, cursor="hand2", command=browse)
-            Theme.bind(btn, "bg", "PANEL_ALT"); Theme.bind(btn, "fg", "ACCENT")
-            Theme.bind(btn, "activebackground", "PANEL")
-            Theme.bind(btn, "activeforeground", "ACCENT")
-            btn.pack(side="left")
+        """Compatibility wrapper: lane captions now own the path entries."""
+        self._rebuild_previews()
         self._update_summary()
 
     def _on_provider_change(self):
@@ -1279,10 +1372,18 @@ class SetupScreen(tk.Frame):
             self._summary_vars["Detector"][0].set(detector)
             self._summary_vars["Status"][0].set(status_text)
             lbl = self._summary_vars["Status"][1]
-            try:
-                lbl.configure(fg=Theme.get(status_key))
-            except tk.TclError:
-                pass
+            if lbl is not None:
+                try:
+                    lbl.configure(fg=Theme.get(status_key))
+                except tk.TclError:
+                    pass
+            self._summary_info_full = " · ".join([
+                mode_name,
+                f"{lanes} lane" + ("s" if lanes != 1 else ""),
+                f"{green}s",
+                detector,
+            ])
+            self._apply_info_text()
             self.start_btn.set_enabled(ok)
         except Exception:
             pass
