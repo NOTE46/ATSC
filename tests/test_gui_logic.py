@@ -482,7 +482,7 @@ def test_lanecard_letterbox_click_mapping_ignores_black_bars():
 
 @pytest.mark.unit
 def test_body_box_narrow_window_uses_full_width():
-    """A narrow canvas uses full width; height fills the taller canvas."""
+    """A narrow canvas uses full width and the larger of canvas/content height."""
     assert gui.body_box(800, 600, 500, 1100) == (0, 800, 600)
 
 
@@ -513,43 +513,77 @@ def test_draw_preview_tile_skips_tiny_and_centers_text():
     tile.create_text.assert_not_called()
     tile.delete.assert_not_called()
 
-    screen._draw_preview_tile(0, 400, 120)
+    screen._draw_preview_tile(0, 300, 120)
     tile.delete.assert_called_once_with("all")
-    args, kwargs = tile.create_text.call_args
-    assert args == (200, 60)
-    assert kwargs["text"] == "L1  ● CAM 0"
-    assert kwargs["font"] == gui.FONT_MONO
+    rect_args, rect_kwargs = tile.create_rectangle.call_args_list[0]
+    assert rect_args == (47, 2, 253, 118)
+    assert rect_kwargs["fill"] == gui.Theme.get("INPUT_BG")
+    assert rect_kwargs["outline"] == gui.Theme.get("BORDER")
+    assert rect_kwargs["width"] == 1
+    badge = next(c for c in tile.create_text.call_args_list
+                 if c.args == (150, 60))
+    assert badge.kwargs["text"] == "L1  ● CAM 0"
+    assert badge.kwargs["font"] == gui.FONT_MONO
 
 
 @pytest.mark.unit
-def test_tile_size_requires_laid_out_cell_and_keeps_16_9():
-    """Cells at or below 10px are unlaid; tiles follow width or cap at 16:9."""
-    assert gui.tile_size(5, 520) is None
-    assert gui.tile_size(10, 520) is None
-    assert gui.tile_size(480, 520) == (480, 270)
-    assert gui.tile_size(1000, 520) == (520, 292)
+def test_draw_preview_tile_locks_16_9_in_tall_cell():
+    """A tall cell gets a narrower centered 16:9 box, never a stretched tile."""
+    screen = object.__new__(gui.SetupScreen)
+    tile = MagicMock()
+    screen._preview_canvases = [tile]
+    screen.mode_var = MagicMock()
+    screen.mode_var.get.return_value = 0
+    screen._path_entries = []
+
+    screen._draw_preview_tile(0, 200, 400)
+    args, _ = tile.create_rectangle.call_args_list[0]
+    assert args == (2, 145, 198, 255)
 
 
 @pytest.mark.unit
-def test_center_y_centers_content_and_clamps_at_top():
-    """Content shorter than the canvas is centered; taller content starts at 0."""
-    assert gui.center_y(1300, 500) == 400
-    assert gui.center_y(400, 900) == 0
-    assert gui.center_y(600, 600) == 0
+def test_tile_row_h_is_width_driven_and_capped():
+    """Row height follows holder width and the optional 16:9 cap."""
+    assert gui.tile_row_h(10) is None
+    assert gui.tile_row_h(700, 6, 480) == 202
+    assert gui.tile_row_h(1000, 6, 480) == 282
+    assert gui.tile_row_h(2000, 6, 480) == 282
+    assert gui.tile_row_h(1000, 6) == 286
 
 
 @pytest.mark.unit
-def test_resize_tiles_applies_size_once_and_is_idempotent():
-    """Tiles get one 16:9 configure call; an unchanged size is a no-op."""
+def test_sb_needed_off_inside_margin():
+    """A hidden scrollbar stays hidden while the overflow is within the margin."""
+    assert gui.sb_needed(False, 510, 500) is False
+
+
+@pytest.mark.unit
+def test_sb_needed_off_past_margin():
+    """A hidden scrollbar shows once the overflow passes the margin."""
+    assert gui.sb_needed(False, 515, 500) is True
+
+
+@pytest.mark.unit
+def test_sb_needed_on_inside_margin():
+    """A visible scrollbar stays visible while the overflow is within the margin."""
+    assert gui.sb_needed(True, 490, 500) is True
+
+
+@pytest.mark.unit
+def test_sb_needed_on_past_margin():
+    """A visible scrollbar hides once the content fits past the margin."""
+    assert gui.sb_needed(True, 485, 500) is False
+
+
+@pytest.mark.unit
+def test_resize_tiles_does_not_mutate_canvas_geometry():
+    """The grid sizes tiles; _resize_tiles stays a compatibility no-op."""
     class _FakeTile:
         def __init__(self):
             self.calls = []
 
         def configure(self, **kw):
             self.calls.append(kw)
-
-        def grid_info(self):
-            return {"padx": 4}
 
     screen = object.__new__(gui.SetupScreen)
     screen.preview_holder = MagicMock()
@@ -559,12 +593,38 @@ def test_resize_tiles_applies_size_once_and_is_idempotent():
     screen._tile_size = None
 
     screen._resize_tiles()
-    for tile in tiles:
-        assert tile.calls == [{"width": 492, "height": 277}]
-
     screen._resize_tiles()
     for tile in tiles:
-        assert len(tile.calls) == 1
+        assert tile.calls == []
+
+
+@pytest.mark.unit
+def test_green_duration_radio_updates_summary():
+    """Clicking a GREEN DURATION pill refreshes the SUMMARY Green value."""
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display is not available")
+    root.withdraw()
+    screen = None
+    try:
+        screen = gui.SetupScreen(root, on_start=lambda *a: None)
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from walk(child)
+
+        radios = [w for w in walk(screen.col_left)
+                  if isinstance(w, tk.Radiobutton) and w.cget("text") == "60s"]
+        assert radios, "60s green duration radio not found"
+        radios[0].invoke()
+        assert screen.green_var.get() == 60
+        assert screen._summary_vars["Green"][0].get() == "60s"
+    finally:
+        if screen is not None:
+            screen.destroy()
+        root.destroy()
 
 
 @pytest.mark.unit

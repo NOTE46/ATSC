@@ -222,7 +222,6 @@ DEFAULT_YELLOW = CONFIG.get("yellow_time", 5)
 TIME_INTERVAL = 2
 
 _UI_SCALE = 1.0
-SETUP_MAX_W = 1100
 
 
 def scale_px(val):
@@ -240,19 +239,21 @@ def body_box(canvas_w, canvas_h, req_h, max_w=None):
     return 0, max(1, int(canvas_w)), max(int(canvas_h), int(req_h))
 
 
-def center_y(canvas_h, req_h):
-    """Top offset that centers content of height req_h in a canvas of height canvas_h."""
-    return max(0, (int(canvas_h) - int(req_h)) // 2)
-
-
-def tile_size(cell_w, max_w=None):
-    """Return (w, h) for a 16:9 preview tile in a grid cell, or None if the cell is not laid out yet."""
-    if cell_w <= 10:
+def tile_row_h(holder_w, pad=6, max_w=None):
+    """Height of one 16:9 tile row for a 2-column holder, or None if not laid out."""
+    if holder_w <= 20:
         return None
-    w = int(cell_w)
+    cell_w = holder_w / 2 - pad * 2
     if max_w is not None:
-        w = min(w, int(max_w))
-    return w, max(1, round(w * 9 / 16))
+        cell_w = min(cell_w, max_w)
+    return round(cell_w * 9 / 16) + pad * 2
+
+
+def sb_needed(visible, req_h, canvas_h, margin=12):
+    """Return whether the vertical scrollbar should be shown, with hysteresis."""
+    if visible:
+        return req_h > canvas_h - margin
+    return req_h > canvas_h + margin
 
 
 # Initialise theme from config
@@ -827,9 +828,9 @@ class SetupScreen(tk.Frame):
         Theme.bind(self.col_right, "bg", "BG")
         self.col_right.grid(row=0, column=1, sticky="nsew",
                             padx=(10, 20), pady=16)
-        self.body_frame.columnconfigure(0, weight=1,
-                                        minsize=scale_px(310))
-        self.body_frame.columnconfigure(1, weight=3)
+        self.body_frame.columnconfigure(0, weight=0,
+                                        minsize=scale_px(340))
+        self.body_frame.columnconfigure(1, weight=1)
         self.body_frame.rowconfigure(0, weight=1)
 
         self._build_left(self.col_left)
@@ -854,7 +855,9 @@ class SetupScreen(tk.Frame):
             req_h = self.body_frame.winfo_reqheight()
             x, w, h = body_box(cw, ch, req_h)
             y = 0
-            show_sb = req_h > ch + 4
+            show_sb = sb_needed(getattr(self, "_sb_visible", False),
+                                req_h, ch, 12)
+            self._sb_visible = show_sb
             layout = (x, w, h, y, show_sb)
             if layout == getattr(self, "_last_body_box", None):
                 return
@@ -917,7 +920,8 @@ class SetupScreen(tk.Frame):
         Theme.bind(green_row, "bg", "PANEL")
         green_row.pack(fill="x")
         for g in GREEN_OPTIONS:
-            make_pill_radio(green_row, f"{g}s", self.green_var, g
+            make_pill_radio(green_row, f"{g}s", self.green_var, g,
+                            command=self._update_summary
                             ).pack(side="left", fill="x", expand=True, padx=2)
 
         # DETECTOR
@@ -964,15 +968,18 @@ class SetupScreen(tk.Frame):
                               fg_key="SUBTEXT", bg_key="PANEL", anchor="w")
         prev_hdr.pack(fill="x", padx=14, pady=(10, 4))
 
-        self.preview_holder = tk.Frame(prev_outer)
+        self.preview_holder = tk.Frame(prev_outer, height=scale_px(220))
         Theme.bind(self.preview_holder, "bg", "PANEL")
-        self.preview_holder.pack(fill="both", expand=True,
-                                 padx=14, pady=(4, 14))
+        self.preview_holder.grid_propagate(False)
+        self.preview_holder.pack(fill="x", padx=14, pady=(4, 12))
+        self.preview_holder.bind("<Configure>", self._fit_holder)
+        Theme.on_change(self.preview_holder, self._refresh_preview_text)
 
         # SOURCE FILES (mode-dependent)
         self.path_card = tk.Frame(parent, highlightthickness=1, bd=0)
         Theme.bind(self.path_card, "bg", "PANEL")
         Theme.bind(self.path_card, "highlightbackground", "BORDER")
+        self._path_card_visible = False
 
         path_hdr = make_label(self.path_card, text="SOURCE FILES",
                               font=FONT_MONO, fg_key="SUBTEXT",
@@ -1001,82 +1008,85 @@ class SetupScreen(tk.Frame):
             cell = tk.Frame(self.summary_body)
             Theme.bind(cell, "bg", "PANEL")
             cell.grid(row=idx // 2, column=idx % 2,
-                      sticky="nsew", padx=6, pady=3)
+                      sticky="nsew", padx=6, pady=4)
             make_label(cell, text=key.upper(), font=FONT_MONO,
                        fg_key="SUBTEXT", bg_key="PANEL", anchor="w"
                        ).pack(fill="x")
             var = tk.StringVar(value="—")
-            lbl = make_label(cell, textvariable=var, font=FONT_B,
+            lbl = make_label(cell, textvariable=var, font=FONT_H,
                              fg_key="TEXT", bg_key="PANEL", anchor="w")
             lbl.pack(fill="x")
             self._summary_vars[key] = (var, lbl)
         for col in range(2):
             self.summary_body.columnconfigure(col, weight=1)
 
-        # START pinned at the bottom; SUMMARY and SOURCE FILES stack above it.
+        # Compact top-down stack: LANES, SUMMARY, then START.
         start_wrap = tk.Frame(parent)
         Theme.bind(start_wrap, "bg", "BG")
         self.start_btn = RoundedButton(start_wrap, text="START CONTROLLER  →",
                                        command=self._start, radius=10, height=44)
         self.start_btn.pack(fill="x")
-        start_wrap.pack(side="bottom", fill="x")
-        sum_outer.pack(side="bottom", fill="x", pady=(0, 10))
-        prev_outer.pack(fill="both", expand=True, pady=(0, 12))
+        prev_outer.pack(fill="x", pady=(0, 10))
+        sum_outer.pack(fill="x", pady=(0, 10))
+        start_wrap.pack(fill="x")
 
     # ── preview logic ──────────────────────────────────────────────
     def _rebuild_previews(self):
-        for w in self.preview_holder.winfo_children():
-            w.destroy()
-        self._preview_canvases = []
-        self._tile_size = None
-        if not getattr(self, "_tiles_bound", False):
-            self.preview_holder.bind("<Configure>", self._resize_tiles)
-            self._tiles_bound = True
         n = self.lane_var.get()
-        cols = 2 if n > 1 else 1
-        rows = (n + cols - 1) // cols
-        for i in range(n):
-            c = tk.Canvas(self.preview_holder, height=90, bd=0,
-                          highlightthickness=1)
-            Theme.bind(c, "bg", "INPUT_BG")
-            Theme.bind(c, "highlightbackground", "BORDER")
-            c.grid(row=i // cols, column=i % cols, padx=6, pady=6,
-                   sticky="nsew")
-            c.bind("<Configure>",
-                   lambda e, i=i: self._draw_preview_tile(i, e.width, e.height))
-            self._preview_canvases.append(c)
+        key = (self.mode_var.get(), n)
+        if key == getattr(self, "_previews_key", None):
+            self._refresh_preview_text()
+            return
+        self._previews_key = key
+        self._tile_size = None
+        if len(self._preview_canvases) != n:
+            for w in self.preview_holder.winfo_children():
+                w.destroy()
+            self._preview_canvases = []
+            for i in range(n):
+                c = tk.Canvas(self.preview_holder, width=10, height=10, bd=0,
+                              highlightthickness=0)
+                Theme.bind(c, "bg", "PANEL")
+                c.bind("<Configure>",
+                       lambda e, i=i: self._draw_preview_tile(i, e.width, e.height))
+                self._preview_canvases.append(c)
+        for c in self._preview_canvases:
+            c.grid_forget()
+        for i, c in enumerate(self._preview_canvases):
+            if n == 1:
+                c.grid(row=0, column=0, rowspan=2, columnspan=2,
+                       padx=6, pady=6, sticky="nsew")
+            elif n == 2:
+                c.grid(row=0, column=i, rowspan=2,
+                       padx=6, pady=6, sticky="nsew")
+            else:
+                c.grid(row=i // 2, column=i % 2,
+                       padx=6, pady=6, sticky="nsew")
         for col in range(2):
-            self.preview_holder.columnconfigure(
-                col, weight=1 if col < cols else 0)
+            self.preview_holder.columnconfigure(col, weight=1)
         for row in range(2):
-            self.preview_holder.rowconfigure(
-                row, weight=1 if row < rows else 0)
-        self.preview_holder.update_idletasks()
-        self._resize_tiles()
+            self.preview_holder.rowconfigure(row, weight=1)
         self._refresh_preview_text()
 
-    def _resize_tiles(self, event=None):
+    def _fit_holder(self, event=None):
         try:
             holder_w = self.preview_holder.winfo_width()
-            cols = 2 if len(self._preview_canvases) > 1 else 1
-            pad = 6
-            if self._preview_canvases:
-                try:
-                    pad = int(self._preview_canvases[0].grid_info().get("padx", 6))
-                except Exception:
-                    pass
-            cell_w = holder_w / cols - pad * 2
-            size = tile_size(cell_w)
-            if size is None:
+            row_h = tile_row_h(holder_w, 6, scale_px(480))
+            if row_h is None:
                 return
-            if size == getattr(self, "_tile_size", None):
+            fit = (holder_w, row_h)
+            if fit == getattr(self, "_last_holder_fit", None):
                 return
-            w, h = size
-            for c in self._preview_canvases:
-                c.configure(width=w, height=h)
-            self._tile_size = size
+            self._last_holder_fit = fit
+            self.preview_holder.configure(height=2 * row_h)
+            self.preview_holder.rowconfigure(0, minsize=row_h)
+            self.preview_holder.rowconfigure(1, minsize=row_h)
         except tk.TclError:
             pass
+
+    def _resize_tiles(self, event=None):
+        """Compatibility no-op: grid weights size the tiles, not this method."""
+        return None
 
     def _draw_preview_tile(self, i, w, h):
         if w <= 10 or h <= 10:
@@ -1086,6 +1096,24 @@ class SetupScreen(tk.Frame):
         except (IndexError, AttributeError):
             return
         c.delete("all")
+        avail_w = max(10, w - 4)
+        avail_h = max(10, h - 4)
+        if avail_w / avail_h > 16 / 9:
+            th = avail_h
+            tw = max(10, int(round(th * 16 / 9)))
+        else:
+            tw = avail_w
+            th = max(10, int(round(tw * 9 / 16)))
+        x1 = (w - tw) // 2
+        y1 = (h - th) // 2
+        x2 = x1 + tw
+        y2 = y1 + th
+        c.create_rectangle(
+            x1, y1, x2, y2,
+            fill=Theme.get("INPUT_BG"),
+            outline=Theme.get("BORDER"),
+            width=1,
+        )
         mode = self.mode_var.get()
         if mode == 1 and i < len(self._path_entries):
             path = self._path_entries[i].get().strip()
@@ -1128,14 +1156,21 @@ class SetupScreen(tk.Frame):
         self._update_summary()
 
     def _on_mode_change(self):
+        mode = self.mode_var.get()
         self._rebuild_previews()
-        if self.mode_var.get() == 1:
-            self.path_card.pack(side="bottom", fill="x", pady=(0, 10),
-                                before=self._lanes_card)
+        want = mode == 1
+        if want != getattr(self, "_path_card_visible", False):
+            self._path_card_visible = want
+            if want:
+                self.path_card.pack(fill="x", pady=(0, 10),
+                                    before=self.summary_body.master)
+            else:
+                self.path_card.pack_forget()
+        if want:
             self._rebuild_paths()
         else:
-            self.path_card.pack_forget()
             self._path_entries = []
+            self._paths_key = None
         self._update_summary()
 
     def _on_lane_change(self):
@@ -1145,9 +1180,13 @@ class SetupScreen(tk.Frame):
         self._update_summary()
 
     def _rebuild_paths(self):
+        n = self.lane_var.get()
+        key = (self.mode_var.get(), n)
+        if key == getattr(self, "_paths_key", None):
+            return
+        self._paths_key = key
         for w in self.path_frame.winfo_children():
             w.destroy()
-        n = self.lane_var.get()
         self.video_paths = [""] * n
         self._path_entries = []
         for i in range(n):
