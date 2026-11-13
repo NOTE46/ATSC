@@ -1,6 +1,6 @@
 # tkinter ships with Python; on Linux install python3-tk.
 numpy==2.5.4
-opencv-python==4.13.0.92
+opencv-python==5.0.0.93
 Pillow==13.0.0
 # Default PyPI wheel on Windows is CPU-only. For NVIDIA GPU (CUDA) acceleration (cu128, or cu126/cu130):
 # pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
