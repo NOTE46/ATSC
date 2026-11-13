@@ -1,7 +1,6 @@
 import json
 import os
 import threading
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import urllib.error
@@ -454,14 +453,15 @@ def test_detect_batch_runs_vision_chunks_concurrently(fake_frame, monkeypatch):
     """4 lanes with stitch_limit 2 => exactly 2 vision calls that run concurrently; no local fallback."""
     monkeypatch.setenv("GEMINI_API_KEY", "mock_key")
     frames = {i: fake_frame.copy() for i in range(4)}
-    barrier = threading.Barrier(2, timeout=1.0)
+    barrier = threading.Barrier(2, timeout=5.0)
     lane_types = {0: "ambulance", 1: "none", 2: "firetruck", 3: "ambulance"}
     cloud_calls = []
 
     def fake_vision(stitched, lane_ids, model_name=None):
         cloud_calls.append(list(lane_ids))
-        # Blocks until both chunk workers arrive; serial execution would time out
-        # with BrokenBarrierError and silently fall back to the local model.
+        # Blocks until both chunk workers arrive; serial execution times out
+        # with BrokenBarrierError, falls back to the local model, and then
+        # local_mock.assert_not_called() fails.
         barrier.wait()
         return {lid: lane_types[lid] for lid in lane_ids}
 
@@ -470,9 +470,7 @@ def test_detect_batch_runs_vision_chunks_concurrently(fake_frame, monkeypatch):
     with patch.object(ambdet, "_load_config", return_value={"vision_stitch_limit": 2}):
         with patch.object(ambdet, "_call_gemini_vision", side_effect=fake_vision):
             with patch.object(ambdet, "_detect_local_type", local_mock):
-                start = time.monotonic()
                 result = ambdet.detect_emergencies_batch(frames)
-                elapsed = time.monotonic() - start
 
     assert len(cloud_calls) == 2
     assert sorted(cloud_calls) == [[0, 1], [2, 3]]
@@ -485,7 +483,6 @@ def test_detect_batch_runs_vision_chunks_concurrently(fake_frame, monkeypatch):
     assert result[1]["emergency"] is False
     assert result[2]["emergency"] is True
     assert result[3]["emergency"] is True
-    assert elapsed < 0.28
 
 
 @pytest.mark.unit
